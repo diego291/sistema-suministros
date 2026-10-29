@@ -30,12 +30,29 @@ function doGet(e) {
   var p = (e && e.parameter) || {};
   if (p.cb) return jsonp_(p);
   if (p.ping) return json_({ ok: true, app: APP_NAME, api: 2, t: Date.now() });
+  if (!p.clasico && props_().getProperty('REDIRIGIR') === 'si') return paginaRedirigir_();
   var t = HtmlService.createTemplateFromFile('Index');
   t.boot = JSON.stringify({ mode: 'gas', apiUrl: '', token: '' });
   return t.evaluate()
     .setTitle('Sistema de Suministros')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1')
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
+
+/** Dirección de la versión web (GitHub Pages). Se puede cambiar con la propiedad WEB_URL. */
+var WEB_URL_BASE = 'https://diego291.github.io/sistema-suministros/';
+function webUrl_() { return props_().getProperty('WEB_URL') || WEB_URL_BASE; }
+/** Cuando está activo, el link de Apps Script abre la versión web (que se actualiza sola desde GitHub) */
+function paginaRedirigir_() {
+  var u = webUrl_(), clas = ScriptApp.getService().getUrl() + '?clasico=1';
+  var h = '<!doctype html><html><head><meta charset="utf-8"><base target="_top"><meta name="viewport" content="width=device-width,initial-scale=1">'
+    + '<style>body{font-family:Arial,sans-serif;background:#eef2f8;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}'
+    + '.c{background:#fff;padding:28px 32px;border-radius:12px;box-shadow:0 4px 18px rgba(0,0,0,.12);text-align:center;max-width:420px}'
+    + 'h2{color:#1f3864;margin:0 0 8px}a.b{display:inline-block;background:#1f3864;color:#fff;padding:12px 22px;border-radius:8px;text-decoration:none;font-weight:700;margin:12px 0}'
+    + 'small a{color:#666}</style></head><body><div class="c"><h2>Sistema de Suministros</h2><p>El sistema ahora se abre en su versión web, que se actualiza sola.</p>'
+    + '<a class="b" href="' + u + '">Abrir el sistema</a><br><small><a href="' + clas + '">Usar la versión anterior</a></small></div>'
+    + '<script>try{window.top.location.replace(' + JSON.stringify(u) + ')}catch(e){}</script></body></html>';
+  return HtmlService.createHtmlOutput(h).setTitle('Sistema de Suministros').addMetaTag('viewport', 'width=device-width, initial-scale=1').setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
 /** API para la versión offline (archivo HTML en la PC) */
@@ -134,6 +151,7 @@ function dispatch_(req) {
       case 'offlineHtml': return { ok: true, data: offlineHtml_() };
       case 'triggers': return { ok: true, data: setTriggers_(req.email, req.digest) };
       case 'users': props_().setProperty('USUARIOS', String(req.users || '')); return { ok: true };
+      case 'redirigir': props_().setProperty('REDIRIGIR', req.on ? 'si' : 'no'); if (req.url) props_().setProperty('WEB_URL', String(req.url)); return { ok: true, data: { redirigir: req.on ? 'si' : 'no' } };
       case 'newToken':
         props_().setProperty('API_TOKEN', Utilities.getUuid().replace(/-/g, ''));
         return { ok: true, data: { token: props_().getProperty('API_TOKEN') } };
@@ -212,6 +230,7 @@ function init_() {
     folderUrl: root.getUrl(),
     token: props_().getProperty('API_TOKEN'),
     webAppUrl: ScriptApp.getService().getUrl(),
+    redirigir: props_().getProperty('REDIRIGIR') === 'si',
     email: email,
     users: props_().getProperty('USUARIOS') || '',
     triggers: triggerState_()

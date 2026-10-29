@@ -605,6 +605,7 @@ defView('cfg:sync', 'Conexión y sincronización', el => {
         <label class="f" style="margin-top:10px"><span>Otros usuarios con acceso (correos separados por coma)</span><div class="bar" style="margin:0"><input class="in" id="sU" value="${esc(INFO.users || '')}"><button class="btn" id="sUs">Guardar</button></div></label>
         <p class="muted" style="font-size:12px">Dirección de la app: ${esc(INFO.webAppUrl || '')}</p>`
       : `<label class="f"><span>URL de la aplicación web (termina en /exec)</span><input class="in" id="sUrl" value="${esc(Sync.url)}"></label><label class="f" style="margin-top:8px"><span>Clave de acceso</span><input class="in" id="sTok" value="${esc(Sync.token)}"></label><div class="bar" style="margin-top:10px"><button class="btn pri" id="sSv">Guardar y conectar</button><button class="btn" id="sDg">🩺 Probar conexión</button></div>`}
+      ${BOOT.mode === 'web' ? `<label class="chk" style="margin-top:12px"><input type="checkbox" id="sRd" ${INFO.redirigir ? 'checked' : ''}> El link de Apps Script de siempre abre esta versión web (así nunca hay que actualizar Apps Script por cambios de pantallas)</label><p class="muted" style="font-size:12px;margin:2px 0 0">La versión anterior sigue disponible agregando <b>?clasico=1</b> al final del link.</p>` : ''}
       <label class="f" style="margin-top:10px"><span>Sincronizar automáticamente cada (segundos)</span><input class="in" type="number" id="sE" value="${CFG.sync.cada}" style="width:120px"></label></div></div>`;
   bindTabs(el);
   $('#sN', el).onclick = async () => { await Sync.run(true); go('cfg:sync'); };
@@ -618,6 +619,7 @@ defView('cfg:sync', 'Conexión y sincronización', el => {
   const nt = $('#sNt', el); if (nt) nt.onclick = async () => { if (!(await confirmBox('Los equipos con la clave anterior dejarán de sincronizar hasta que ingresen la nueva. ¿Continuar?'))) return; const r = await Sync.call({ action: 'newToken' }); INFO.token = r.token; go('cfg:sync'); };
   const us = $('#sUs', el); if (us) us.onclick = async () => { await Sync.call({ action: 'users', users: $('#sU', el).value }); INFO.users = $('#sU', el).value; toast('Guardado ✔', 'ok'); };
   const sv = $('#sSv', el); if (sv) sv.onclick = async () => { LS.set('apiUrl', limpiarUrl($('#sUrl', el).value)); LS.set('token', $('#sTok', el).value.trim()); Sync.configure(); await Sync.run(true); go('cfg:sync'); };
+  const rd = $('#sRd', el); if (rd) rd.onchange = async () => { try { await Sync.call({ action: 'redirigir', on: rd.checked, url: location.href.split('#')[0].split('?')[0] }); INFO.redirigir = rd.checked; toast(rd.checked ? 'Listo: el link de siempre abrirá esta versión web ✔' : 'El link de siempre vuelve a abrir la versión de Apps Script', 'ok', 6000); } catch (e) { rd.checked = !rd.checked; toast('Requiere conexión y la última versión de Code.gs', 'bad', 6000); } };
   const dg = $('#sDg', el); if (dg) dg.onclick = () => diagConexion(limpiarUrl($('#sUrl', el).value), $('#sTok', el).value.trim());
 });
 
