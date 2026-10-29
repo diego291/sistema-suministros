@@ -484,19 +484,29 @@ function totalesIngreso(desde, hasta) {
   const niv = {}; v.forEach(r => { const n = r.grado ? (cicloDe(r.grado) || 'Sin grado') : 'Sin grado'; niv[n] = (niv[n] || 0) + num(r.pago); });
   return { v, rb, pago, suma, enBanco, efectivo, don, caf, dep, nr, dev, arq, ingresos, esperado, niv };
 }
-/** Posición de caja general: compara lo que debe haber hoy con el último arqueo MÁS los movimientos
-    registrados después de ese arqueo (cobros, depósitos, devoluciones…). Así un depósito hecho
-    después de contar no aparece como faltante. */
+/** Posición de caja general: el último arqueo MÁS los movimientos que ocurrieron después de él
+    (cobros en efectivo, depósitos, no remesado, devoluciones). Un movimiento es "posterior" si su fecha
+    es después del arqueo, o si es del mismo día y no existía cuando se contó (se guarda la lista).
+    Editar o anular recibos de días anteriores al arqueo NO cambia el efectivo de hoy. */
+const MOV_CAJA = [['depositos', 'cantidad', 'dep'], ['noremesado', 'monto', 'nr'], ['devoluciones', 'cantidad', 'dev']];
+const efectivoRecibo = r => isTrue(r.nulo) ? 0 : rubrosOn().filter(x => !x.banco).reduce((a, x) => a + num(r['r_' + x.k]), 0);
 function posicionCaja() {
   const T = totalesIngreso('', ''), arq = T.arq;
   if (!arq) return { T, arq: null, contado: 0, delta: 0, enCaja: 0, dif: T.esperado, det: null };
   let snap = null; try { snap = arq.snap ? JSON.parse(arq.snap) : null; } catch (e) { }
-  if (!snap) { const A = totalesIngreso('', toYMD(arq.fecha)); snap = { esp: A.esperado, ing: A.ingresos, dep: A.dep, nr: A.nr, dev: A.dev, aprox: 1 }; }
-  const det = { ing: r2(T.ingresos - num(snap.ing)), dep: r2(T.dep - num(snap.dep)), nr: r2(T.nr - num(snap.nr)), dev: r2(T.dev - num(snap.dev)) };
-  const delta = r2(T.esperado - num(snap.esp)), contado = num(arq.contado), enCaja = r2(contado + delta);
-  return { T, arq, contado, delta, enCaja, dif: r2(T.esperado - enCaja), det, aprox: !!snap.aprox };
+  const F = toYMD(arq.fecha), t0 = num((snap && snap.t) || arq._upd), ids = snap && snap.ids ? new Set(snap.ids) : null;
+  const despues = r => { const f = toYMD(r.fecha); if (f > F) return true; if (f < F) return false; return ids ? !ids.has(r._id) : num(r._upd) > t0; };
+  const det = { ing: 0, dep: 0, nr: 0, dev: 0 };
+  Store.all('recibos').forEach(r => { if (despues(r)) det.ing += efectivoRecibo(r); });
+  if (CFG.cuadre.incluirDonaciones) Store.all('donaciones').forEach(r => { if (despues(r)) det.ing += num(r.cantidad); });
+  MOV_CAJA.forEach(([m, k, d]) => Store.all(m).forEach(r => { if (despues(r)) det[d] += num(r[k]); }));
+  Object.keys(det).forEach(k => det[k] = r2(det[k]));
+  const delta = r2(det.ing - det.dep - det.nr - det.dev), contado = num(arq.contado), enCaja = r2(contado + delta);
+  return { T, arq, contado, delta, enCaja, dif: r2(T.esperado - enCaja), det, aprox: !ids };
 }
-const snapCaja = () => { const A = totalesIngreso('', ''); return JSON.stringify({ esp: A.esperado, ing: A.ingresos, dep: A.dep, nr: A.nr, dev: A.dev, t: Date.now() }); };
+/** Al guardar un arqueo: qué registros del mismo día ya existían (para no contarlos otra vez después) */
+const snapCaja = fecha => { const A = totalesIngreso('', ''), F = toYMD(fecha || today()); const ids = []; ['recibos', 'donaciones', ...MOV_CAJA.map(x => x[0])].forEach(m => Store.all(m).forEach(r => { if (toYMD(r.fecha) === F) ids.push(r._id); }));
+  return JSON.stringify({ esp: A.esperado, ing: A.ingresos, dep: A.dep, nr: A.nr, dev: A.dev, t: Date.now(), ids }); };
 defView('t:cuadre', 'Ingresos y cuadre', el => {
   const st = Object.assign(stDef(), { desde: '', hasta: '' }, LS.get('cu', {}));
   const draw = () => {
@@ -546,7 +556,7 @@ function vistaArqueo(el, p) {
   let manual = prev ? num(prev.esperado) : null;
   let notas = prev ? prev.notas || '' : '', fecha = prev ? prev.fecha : today();
   const ultimo = c => Store.all('arqueos').filter(a => a.caja === c).sort((a, b) => String(b.fecha).localeCompare(a.fecha) || num(b._upd) - num(a._upd))[0];
-  const esperadoAuto = () => caja === 'CAJA CHICA' ? prepCaja(Store.all('cajachica')).saldo : totalesIngreso('', '').esperado;
+  const esperadoAuto = () => caja === 'CAJA CHICA' ? prepCaja(Store.all('cajachica')).saldo : posicionCaja().enCaja;
   const vista = (extra) => go(caja === 'CAJA CHICA' ? 'c:arqueo' : 't:arqueo', Object.assign({ caja }, extra || {}));
   const evalCant = t => { const x = String(t || '').trim(); if (!x) return 0; const v = typeof calcEval === 'function' ? calcEval(x) : num(x); return v === null ? NaN : v; };
   const esOp = t => /[+\-*x×\/]/i.test(String(t || '').replace(/^\s*-/, ''));
@@ -574,7 +584,7 @@ function vistaArqueo(el, p) {
       <div class="aq-k"><small>Debe haber <span class="tag warn" id="aqMan">manual</span></small><div style="display:flex;gap:6px;align-items:center"><input class="in num" type="number" step="any" id="aE" value="${r2(esp()).toFixed(2)}" title="Puede corregirlo a mano"><button class="btn sm" id="aR" title="Volver al cálculo automático">↺</button></div></div>
       <div class="aq-k" id="aqDif"><small>Diferencia</small><b id="aqDifV"></b></div>
       <div class="aq-act">${prev ? '<button class="btn pri" id="aS">💾 Guardar cambios</button><button class="btn" id="aSn">💾 Guardar como nuevo</button>' : '<button class="btn pri" id="aS">💾 Guardar arqueo</button>'}<button class="btn" id="aP">🖨️ Imprimir</button></div></div>
-      ${caja === 'CAJA CHICA' ? `<div class="muted aq-nota">Fondo asignado ${money(CFG.caja.fondo)} − gastos documentados en la caja actual ${money(num(CFG.caja.fondo) - esperadoAuto())}.</div>` : `<div class="muted aq-nota">Debe haber = cobrado según rubros (sin los pagados en banco)${CFG.cuadre.incluirDonaciones ? ' + donaciones' : ''} − depósitos − no remesado − devoluciones (año ${Store.year}). Registre los depósitos que haga después de contar.</div>`}</div>
+      ${caja === 'CAJA CHICA' ? `<div class="muted aq-nota">Fondo asignado ${money(CFG.caja.fondo)} − gastos documentados en la caja actual ${money(num(CFG.caja.fondo) - esperadoAuto())}.</div>` : (() => { const PC = posicionCaja(); return PC.arq ? `<div class="muted aq-nota">Debe haber = último arqueo (${fdate(PC.arq.fecha)}: ${money(PC.contado)}) + cobrado en efectivo después ${money(PC.det.ing)} − depositado después ${money(PC.det.dep)}${PC.det.nr ? ' − no remesado ' + money(PC.det.nr) : ''}${PC.det.dev ? ' − devoluciones ' + money(PC.det.dev) : ''}. Los depósitos y recibos anteriores al último arqueo ya no cuentan.</div>` : `<div class="muted aq-nota">Debe haber = cobrado según rubros (sin los pagados en banco)${CFG.cuadre.incluirDonaciones ? ' + donaciones' : ''} − depósitos − no remesado − devoluciones (año ${Store.year}).</div>`; })()}</div>
     <div class="grid g2">
       <div class="card"><h3 style="display:flex;align-items:center">💵 Billetes<span class="muted" id="aqB" style="font-size:13px;margin-left:auto"></span></h3><table class="t aq-t"><tbody>${BIL.map(([l, v]) => fila(l, v, 'bil')).join('')}</tbody></table></div>
       <div class="card"><h3 style="display:flex;align-items:center">🪙 Monedas<span class="muted" id="aqM" style="font-size:13px;margin-left:auto"></span></h3><table class="t aq-t"><tbody>${MON.map(([l, v]) => fila(l, v, 'mon')).join('')}</tbody></table>
@@ -604,7 +614,7 @@ function vistaArqueo(el, p) {
     $('#aU', el).onclick = () => { const u = ultimo(caja); if (!u) return; let c = {}; try { c = JSON.parse(u.conteo || '{}'); } catch (e) { } exprs = Object.assign({}, c._expr || {}); delete c._expr; cnt = c; draw(); toast(`Se cargaron las cantidades del arqueo del ${fdate(u.fecha)} (${money(u.contado)})`, 'ok'); };
     const nw = $('#aNw', el); if (nw) nw.onclick = () => vista();
     const rec = (nuevo) => { const r = resultado(); const ex = {}; DENOM.forEach(([l]) => { if (exprs[l] && esOp(exprs[l])) ex[l] = exprs[l]; });
-      return { _id: prev && !nuevo ? prev._id : undefined, fecha: $('#aF', el).value, caja, contado: contado(), esperado: esp(), diferencia: r.d, resultado: r.txt, conteo: JSON.stringify(Object.assign({}, cnt, Object.keys(ex).length ? { _expr: ex } : {})), notas: $('#aN', el).value, snap: caja === 'GENERAL' ? (prev && !nuevo && prev.snap ? prev.snap : snapCaja()) : '' }; };
+      return { _id: prev && !nuevo ? prev._id : undefined, fecha: $('#aF', el).value, caja, contado: contado(), esperado: esp(), diferencia: r.d, resultado: r.txt, conteo: JSON.stringify(Object.assign({}, cnt, Object.keys(ex).length ? { _expr: ex } : {})), notas: $('#aN', el).value, snap: caja === 'GENERAL' ? (prev && !nuevo && prev.snap ? prev.snap : snapCaja($('#aF', el).value)) : '' }; };
     const guardar = async nuevo => { if ($$('[data-d].bad', el).length) return toast('Hay una cantidad con una operación inválida (marcada en rojo)', 'bad'); if (!contado() && !(await confirmBox('El conteo está en $0.00. ¿Guardar el arqueo así?', 'Guardar'))) return; const r = await Store.save('arqueos', rec(nuevo)); toast('Arqueo guardado ✔', 'ok'); go(caja === 'CAJA CHICA' ? 'c:arqueo' : 't:arqueo', { caja, id: r._id }); };
     $('#aS', el).onclick = () => guardar(false);
     const sn = $('#aSn', el); if (sn) sn.onclick = () => guardar(true);
