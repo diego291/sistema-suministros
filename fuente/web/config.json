@@ -1,7 +1,7 @@
 {
   "nombre": "Sistema de Suministros",
   "nombre_corto": "Suministros",
-  "apiUrl": "",
+  "apiUrl": "https://script.google.com/macros/s/AKfycbwETPLGIbES5ytsZk4LABPu9PTXqO1hmvCCzjYfS3wn4juu59ar8BYeDAQSUgAIZ4My/exec",
   "color": "#1f3864",
   "_nota": "apiUrl = URL /exec de la implementación de Apps Script. NO es secreta. NUNCA ponga aquí la clave de acceso."
 }
