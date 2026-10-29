@@ -303,27 +303,28 @@ function filasEntrega(s, rk, ix) {
   const pag = [], pen = [];
   estDeSec(ix.ests, s).filter(e => e.estado !== 'RETIRADO').forEach(e => {
     const rs = (ix.pag.get(e._id) || []).filter(r => num(r['r_' + rk]));
-    (rs.length ? pag : pen).push({ e, recs: [...new Set(rs.map(recNum))].join(', ') });
+    rs.sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)));
+    (rs.length ? pag : pen).push({ e, recs: [...new Set(rs.map(recNum))].join(', '), det: rs.map(r => `${esc(recNum(r))} · ${fdate(r.fecha).slice(0, 5)} · <b>${money(r['r_' + rk])}</b>`).join('<br>'), monto: r2(rs.reduce((a, r) => a + num(r['r_' + rk]), 0)) });
   });
   return { pag, pen };
 }
 function paginaEntrega(rb, s, ix, o) {
   const { pag, pen } = filasEntrega(s, rb.k, ix); const obs = o.obs || {}; let n = 0;
-  const fila = (x, gris) => `<tr${gris ? ' style="color:#888"' : ''}><td class="c">${++n}</td><td>${esc(x.e.nombre)}</td><td class="c">${esc(x.recs || '—')}</td><td class="c">☐</td><td></td><td></td><td style="font-size:9.5px">${esc(obs[x.e._id] || '')}</td></tr>`;
+  const fila = (x, gris) => `<tr${gris ? ' style="color:#888"' : ''}><td class="c">${++n}</td><td>${esc(x.e.nombre)}</td><td style="font-size:9px;line-height:1.3">${x.det || '—'}</td><td class="c">☐</td><td></td><td></td><td style="font-size:9.5px">${esc(obs[x.e._id] || '')}</td></tr>`;
   const sep = (t, cs) => `<tr><td colspan="7" style="background:#eef3fa;font-weight:700;color:#1f3864;-webkit-print-color-adjust:exact;print-color-adjust:exact">${t}</td></tr>`;
   const cuerpo = sep(`PAGARON · listos para entregar (${pag.length})`) + (pag.map(x => fila(x)).join('') || '<tr><td colspan="7"><i>Nadie ha pagado todavía.</i></td></tr>')
     + (o.pend && pen.length ? sep(`PENDIENTES DE PAGO (${pen.length}) · entregar solo con recibo`) + pen.map(x => fila(x, 1)).join('') : '');
   const unica = o.unica ? `<div style="border:1px solid #9bc2e6;padding:8px 10px;margin-top:10px;font-size:11px;break-inside:avoid"><b>Entrega al docente (firma única)</b><br>Recibí <b>${o.cant || pag.length}</b> ${esc(String(rb.l).toLowerCase())} para entregar a los estudiantes marcados de esta lista.<div style="display:flex;gap:30px;margin-top:22px"><div style="flex:1;border-top:1px solid #000;padding-top:3px">Nombre: ${esc(o.docente || '')}</div><div style="flex:1;border-top:1px solid #000;padding-top:3px">Firma</div><div style="width:120px;border-top:1px solid #000;padding-top:3px">Fecha</div></div></div>` : '';
   return `<div class="page">${membrete()}<div class="ptitle">ENTREGA DE ${esc(String(rb.l).toUpperCase())}</div><div class="psub">${esc(tituloSec(s))} · Año ${Store.year}</div>
-    <div class="pkpi"><div><small>Estudiantes</small><b>${pag.length + pen.length}</b></div><div><small>Pagaron</small><b>${pag.length}</b></div><div><small>Pendientes</small><b>${pen.length}</b></div></div>
-    ${ptable([{ l: 'N°', w: '26px' }, 'Nombre del estudiante', { l: 'Recibo', w: '78px' }, { l: 'Entregado', w: '52px' }, { l: 'Fecha', w: '66px' }, { l: 'Firma de recibido', w: '120px' }, { l: 'Observaciones', w: '120px' }], [cuerpo])}
+    <div class="pkpi"><div><small>Estudiantes</small><b>${pag.length + pen.length}</b></div><div><small>Pagaron</small><b>${pag.length}</b></div><div><small>Pendientes</small><b>${pen.length}</b></div><div><small>Recaudado</small><b>${money(pag.reduce((a, x) => a + x.monto, 0))}</b></div></div>
+    ${ptable([{ l: 'N°', w: '26px' }, 'Nombre del estudiante', { l: 'Pagó (recibo · fecha · monto)', w: '112px' }, { l: 'Entregado', w: '52px' }, { l: 'Fecha', w: '66px' }, { l: 'Firma de recibido', w: '120px' }, { l: 'Observaciones', w: '120px' }], [cuerpo])}
     ${o.gral ? `<div style="border:1px solid #bfbfbf;padding:6px 8px;margin-top:8px;font-size:11px;break-inside:avoid"><b>Observaciones:</b> ${esc(o.gral).replace(/\n/g, '<br>')}</div>` : `<div style="border:1px solid #bfbfbf;padding:6px 8px;margin-top:8px;font-size:11px;height:46px"><b>Observaciones:</b></div>`}
     ${unica}${firmas([['', 'Entregado por · Encargado de Suministros'], [o.docente || '', 'Recibido conforme · Docente orientador']])}</div>`;
 }
 function dlgEntrega(rb, s, ix) {
   const k = 'entObs_' + rb.k + '_' + secKey(s.g, s.s, s.o); const g0 = LS.get(k, {});
   const { pag, pen } = filasEntrega(s, rb.k, ix);
-  const fila = (x, gris) => `<tr${gris ? ' class="muted"' : ''}><td>${esc(x.e.nombre)}</td><td>${esc(x.recs || '—')}</td><td><input class="in" data-ob="${x.e._id}" value="${esc((g0.obs || {})[x.e._id] || '')}" style="padding:4px 8px"></td></tr>`;
+  const fila = (x, gris) => `<tr${gris ? ' class="muted"' : ''}><td>${esc(x.e.nombre)}</td><td style="font-size:12px">${x.det || '—'}</td><td><input class="in" data-ob="${x.e._id}" value="${esc((g0.obs || {})[x.e._id] || '')}" style="padding:4px 8px"></td></tr>`;
   modal(`📦 Entrega de ${esc(rb.l)} · ${esc(tituloSec(s))}`, `<p class="muted" style="margin-top:0">Escriba observaciones antes de imprimir (se guardan para esta sección). Las de cada alumno salen en su fila.</p>
     <div class="form"><label class="f wide"><span>Observaciones generales</span><textarea class="in" id="enG" rows="2" placeholder="Ej.: El docente recibió 10 carnets y firma por los padres">${esc(g0.gral || '')}</textarea></label>
     <label class="chk"><input type="checkbox" id="enU" ${g0.unica ? 'checked' : ''}> Agregar recuadro de <b>firma única del docente</b> (recibe todo y entrega a los alumnos)</label>
@@ -343,19 +344,21 @@ function dlgEntrega(rb, s, ix) {
 
 /* ---------- COBRO POR GRADO (nómina para docente / presidente de grado) ---------- */
 function paginaCobroGrado(rb, s, ix, o) {
-  const valor = num(o.valor), np = Math.max(1, Math.min(4, num(o.pagos) || 3)); let n = 0, porCobrar = 0, completos = 0;
+  const valor = num(o.valor), np = Math.max(1, Math.min(4, num(o.pagos) || 3)); let n = 0, porCobrar = 0, completos = 0, totPag = 0;
   const ests = estDeSec(ix.ests, s).filter(e => e.estado !== 'RETIRADO');
   const rows = ests.map(e => {
-    const pagado = r2((ix.pag.get(e._id) || []).reduce((a, r) => a + num(r['r_' + rb.k]), 0));
+    const rsP = (ix.pag.get(e._id) || []).filter(r => num(r['r_' + rb.k])).sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)));
+    const pagado = r2(rsP.reduce((a, r) => a + num(r['r_' + rb.k]), 0)); totPag += pagado;
+    const det = rsP.map(r => `${esc(recNum(r))} · ${fdate(r.fecha).slice(0, 5)} · <b>${money(r['r_' + rb.k])}</b>`).join('<br>');
     const debe = valor ? Math.max(0, r2(valor - pagado)) : 0; if (valor && !debe) completos++; porCobrar += debe;
-    const dtxt = !valor ? (pagado ? `<span style="color:#38761d">pagó ${money(pagado)}</span>` : '') : debe ? `${pagado ? `<span style="font-size:8.5px;color:#666">abonó ${money(pagado)} · </span>` : ''}${money(debe)}` : '<span style="color:#38761d">✔ pagado</span>';
-    return `<tr><td class="c">${++n}</td><td>${esc(e.nombre)}</td><td class="r">${dtxt}</td>${'<td></td><td></td>'.repeat(np)}<td></td></tr>`;
+    const dtxt = !valor ? '' : debe ? money(debe) : '<span style="color:#38761d">✔ completo</span>';
+    return `<tr><td class="c">${++n}</td><td>${esc(e.nombre)}</td><td style="font-size:9px;line-height:1.3">${det || '<span style="color:#999">—</span>'}</td><td class="r">${dtxt}</td>${'<td></td><td></td>'.repeat(np)}<td></td></tr>`;
   });
-  const head = `<thead><tr><th rowspan="2" style="width:24px">N°</th><th rowspan="2">Nombre del estudiante</th><th rowspan="2" style="width:96px">Debe</th>${Array.from({ length: np }, (_, i) => `<th colspan="2">${['1er', '2°', '3er', '4°'][i]} pago</th>`).join('')}<th rowspan="2" style="width:56px">Saldo</th></tr><tr>${'<th style="width:44px">Fecha</th><th style="width:44px">$</th>'.repeat(np)}</tr></thead>`;
-  const foot = `<tr class="tot"><td colspan="2">TOTALES</td><td class="r">${valor ? money(porCobrar) : ''}</td>${'<td></td><td></td>'.repeat(np)}<td></td></tr>`;
+  const head = `<thead><tr><th rowspan="2" style="width:24px">N°</th><th rowspan="2">Nombre del estudiante</th><th rowspan="2" style="width:118px">Ya pagado<br><span style="font-weight:400">recibo · fecha · monto</span></th><th rowspan="2" style="width:58px">Debe</th>${Array.from({ length: np }, (_, i) => `<th colspan="2">${['1er', '2°', '3er', '4°'][i]} pago</th>`).join('')}<th rowspan="2" style="width:56px">Saldo</th></tr><tr>${'<th style="width:44px">Fecha</th><th style="width:44px">$</th>'.repeat(np)}</tr></thead>`;
+  const foot = `<tr class="tot"><td colspan="2">TOTALES</td><td class="r">${money(totPag)}</td><td class="r">${valor ? money(porCobrar) : ''}</td>${'<td></td><td></td>'.repeat(np)}<td></td></tr>`;
   return `<div class="page">${membrete()}<div class="ptitle">CONTROL DE PAGOS POR GRADO · ${esc(String(rb.l).toUpperCase())}</div><div class="psub">${esc(tituloSec(s))}${valor ? ' · Valor ' + money(valor) : ''}${o.fecha ? ' · Entregado el ' + fdate(o.fecha) : ''}</div>
     <table style="margin-bottom:4px;font-size:11px"><tr><td style="border:0;padding:0"><b>Docente / presidente de grado:</b> ${esc(o.docente || '______________________________')}</td></tr></table>
-    <div class="pkpi"><div><small>Estudiantes</small><b>${ests.length}</b></div>${valor ? `<div><small>Ya pagaron completo</small><b>${completos}</b></div><div><small>Por cobrar</small><b>${money(porCobrar)}</b></div>` : ''}</div>
+    <div class="pkpi"><div><small>Estudiantes</small><b>${ests.length}</b></div><div><small>Ya recaudado</small><b>${money(totPag)}</b></div>${valor ? `<div><small>Ya pagaron completo</small><b>${completos}</b></div><div><small>Por cobrar</small><b>${money(porCobrar)}</b></div>` : ''}</div>
     <table class="pt">${head}<tbody>${rows.join('')}${foot}</tbody></table>
     ${o.obs ? `<p class="pnote" style="font-style:normal;font-size:10.5px"><b>Nota:</b> ${esc(o.obs)}</p>` : ''}
     <div style="border:1px solid #9bc2e6;padding:7px 10px;margin-top:10px;font-size:11px;line-height:1.9;break-inside:avoid"><b style="color:#1f3864">Entrega del dinero</b><br>Total recibido: $____________ &nbsp;&nbsp; Fecha: ____/____/________ &nbsp;&nbsp; Recibo(s) N°: ________________</div>
