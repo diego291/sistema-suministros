@@ -1,0 +1,682 @@
+<script>
+/* =================================================================
+   PANTALLA PRINCIPAL · CALENDARIO · AGENDA · NOTIFICACIONES
+   ================================================================= */
+const TIPO_COLORS = ['#2e75b6', '#c62828', '#7b1fa2', '#2e7d32', '#ef6c00', '#00838f', '#5d4037', '#ad1457', '#455a64', '#827717'];
+const tiposAg = () => { const l = lista('agenda_tipos').slice(); if (!l.includes('Nota')) l.unshift('Nota'); return l; };
+const colorTipo = t => { if (t === 'Nota') return '#d4a106'; const i = lista('agenda_tipos').indexOf(t); return TIPO_COLORS[(i < 0 ? 0 : i) % TIPO_COLORS.length]; };
+
+/** ¿El evento ocurre en esta fecha? (con repeticiones) */
+function ocurre(ev, f) {
+  const f0 = toYMD(ev.fecha); if (!f0) return false;
+  if (f < f0) return false;
+  if (ev.hasta && f > toYMD(ev.hasta)) return false;
+  const rep = ev.repetir || 'No';
+  if (rep === 'No') return f === f0;
+  const a = dobj(f0), b = dobj(f), dias = Math.round((b - a) / 86400000);
+  switch (rep) {
+    case 'Diario': return true;
+    case 'Lunes a viernes': return b.getDay() >= 1 && b.getDay() <= 5;
+    case 'Semanal': return dias % 7 === 0;
+    case 'Quincenal': return dias % 14 === 0;
+    case 'Mensual': return a.getDate() === b.getDate();
+    case 'Anual': return a.getDate() === b.getDate() && a.getMonth() === b.getMonth();
+  }
+  return f === f0;
+}
+const esRep = ev => (ev.repetir || 'No') !== 'No';
+const hechoEn = (ev, f) => esRep(ev) ? String(ev.hechos || '').split(',').includes(f) : isTrue(ev.hecho);
+async function toggleHecho(ev, f, val) {
+  const r = Object.assign({}, ev);
+  if (esRep(r)) { const s = new Set(String(r.hechos || '').split(',').filter(Boolean)); val ? s.add(f) : s.delete(f); r.hechos = [...s].sort().slice(-400).join(','); }
+  else { r.hecho = val; r.f_hecho = val ? today() : ''; }
+  await Store.save('agenda', r);
+}
+function eventosDe(f) {
+  return Store.all('agenda').filter(e => ocurre(e, f)).sort((a, b) => String(a.hora || '99').localeCompare(String(b.hora || '99')));
+}
+function atrasadas() {
+  const t = today();
+  return Store.all('agenda').filter(e => !esRep(e) && toYMD(e.fecha) && toYMD(e.fecha) < t && !isTrue(e.hecho)).sort((a, b) => String(a.fecha).localeCompare(b.fecha));
+}
+
+function agItem(ev, f, showDate) {
+  const done = hechoEn(ev, f);
+  return `<div class="ag-item ${done ? 'done' : ''}" data-ev="${ev._id}" data-f="${f}">
+    <i class="cl" style="background:${colorTipo(ev.tipo)}"></i>
+    <input type="checkbox" ${done ? 'checked' : ''} title="Marcar como hecha">
+    <span class="tm">${showDate ? fdate(f).slice(0, 5) + '<br>' : ''}${esc(ev.hora || '—')}</span>
+    <div class="bd"><b>${ev.tipo === 'Nota' ? '📝 ' : ''}${esc(ev.titulo)}</b><span class="muted" style="font-size:12px">${esc(ev.tipo || '')}${ev.lugar ? ' · ' + esc(ev.lugar) : ''}${ev.prioridad === 'Alta' ? ' · <span class="bad-t">Alta</span>' : ''}${esRep(ev) ? ' · 🔁 ' + esc(ev.repetir) : ''}${ev.recordar !== '' && ev.recordar !== undefined ? ' · 🔔' : ''}</span></div></div>`;
+}
+function bindAgenda(host, after) {
+  host.addEventListener('click', async e => {
+    const it = e.target.closest('.ag-item'); if (!it) return;
+    const ev = Store.get('agenda', it.dataset.ev); if (!ev) return;
+    if (e.target.matches('input[type=checkbox]')) { await toggleHecho(ev, it.dataset.f, e.target.checked); after && after(); return; }
+    openForm('agenda', ev, { onDone: after });
+  });
+}
+
+/* ---------- mini calendario reutilizable ---------- */
+function calendario(host, opts) {
+  let ref = opts.mes ? dobj(opts.mes + '-01') : new Date(); ref.setDate(1);
+  let sel = opts.sel || today();
+  const draw = () => {
+    const y = ref.getFullYear(), m = ref.getMonth();
+    const first = new Date(y, m, 1), start = new Date(first); start.setDate(1 - ((first.getDay() + 6) % 7));
+    const t = today(); let cells = '';
+    const evs = Store.all('agenda');
+    for (let i = 0; i < 42; i++) {
+      const d = new Date(start); d.setDate(start.getDate() + i); const f = ymd(d);
+      const del = evs.filter(e => ocurre(e, f));
+      if (opts.big) {
+        cells += `<div class="dd ${d.getMonth() !== m ? 'out' : ''} ${f === t ? 'today' : ''} ${f === sel ? 'sel' : ''}" data-d="${f}"><span class="n">${d.getDate()}</span>
+          ${del.sort((a, b) => String(a.hora || '99').localeCompare(String(b.hora || '99'))).slice(0, 4).map(e => `<div class="ev ${hechoEn(e, f) ? 'done' : ''}" data-ev="${e._id}" style="background:${colorTipo(e.tipo)}" title="${esc((e.hora || '') + ' ' + e.titulo)}">${esc((e.hora ? e.hora + ' ' : '') + e.titulo)}</div>`).join('')}
+          ${del.length > 4 ? `<div class="muted" style="font-size:11px">+${del.length - 4} más</div>` : ''}</div>`;
+      } else {
+        const pend = del.filter(e => !hechoEn(e, f)).length;
+        cells += `<div class="dd ${d.getMonth() !== m ? 'out' : ''} ${f === t ? 'today' : ''} ${f === sel ? 'sel' : ''} ${pend && f < t ? 'late' : ''}" data-d="${f}" title="${del.length ? esc(del.map(e => (hechoEn(e, f) ? '✔ ' : '• ') + e.titulo).join('\n')) : ''}">${d.getDate()}${pend ? `<b class="pc ${f < t ? 'bad' : ''}">${pend}</b>` : ''}<div class="dots">${del.slice(0, 5).map(e => `<i style="background:${hechoEn(e, f) ? '#9aa5b8' : colorTipo(e.tipo)}"></i>`).join('')}</div></div>`;
+      }
+    }
+    host.innerHTML = `<div class="cal ${opts.big ? 'big' : ''}"><div class="ch"><button class="iconbtn" data-nav="-1">◀</button><b>${MESES[m]} ${y}</b><button class="btn sm" data-nav="0">Hoy</button><button class="iconbtn" data-nav="1">▶</button></div>
+      <div class="cg">${['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'].map(x => `<div class="dw">${x}</div>`).join('')}${cells}</div></div>`;
+  };
+  host.addEventListener('click', e => {
+    const nv = e.target.closest('[data-nav]');
+    if (nv) { const n = Number(nv.dataset.nav); if (n === 0) { ref = new Date(); ref.setDate(1); sel = today(); opts.onSel && opts.onSel(sel); } else ref.setMonth(ref.getMonth() + n); draw(); return; }
+    const evc = e.target.closest('[data-ev]'); if (evc && opts.big) { const ev = Store.get('agenda', evc.dataset.ev); if (ev) openForm('agenda', ev, { onDone: draw }); return; }
+    const dd = e.target.closest('[data-d]'); if (dd) { sel = dd.dataset.d; draw(); opts.onSel && opts.onSel(sel, e); }
+  });
+  draw();
+  return { draw, get sel() { return sel; } };
+}
+
+/* ---------- INICIO ---------- */
+defView('home', 'Panel principal', el => {
+  const t = today();
+  el.innerHTML = `<div id="hBus"></div><div id="hBusR"></div><div class="hero"><div class="clock"><div class="w" id="hW"></div><div class="h" id="hClock">--:--</div><div class="d" id="hDate"></div><div class="g" id="hGreet"></div><div class="nx" id="hNx"></div><div class="st" id="hSt"></div></div>
+    <div class="card" style="margin:0"><div id="hCal"></div></div></div>
+    <div class="kpis" id="hKpi"></div>
+    <div class="grid g2">
+      <div class="card"><h3 id="hDayT">Agenda de hoy</h3>
+        <div class="quick"><input class="in" id="qT" placeholder="✍️ Anotar actividad… (Enter para guardar)"><input class="in" id="qH" type="time" style="width:120px" title="Hora (opcional)"><select class="in" id="qR" style="width:160px" title="Notificación">${RECORDAR.map(o => `<option value="${o.v}" ${o.v === 15 ? 'selected' : ''}>🔔 ${o.l}</option>`).join('')}</select><button class="btn pri" id="qB">+</button></div>
+        <div id="hDay" style="margin-top:8px"></div></div>
+      <div class="card"><h3>Próximos 7 días <small id="hAtrN"></small></h3><div id="hNext"></div></div>
+    </div>
+    <div class="card" id="hAlerts"></div>`;
+  buscadorAlumnos($('#hBus', el), { resHost: $('#hBusR', el) });
+  let selDay = t;
+  const cal = calendario($('#hCal', el), { sel: t, onSel: f => { selDay = f; drawDay(); } });
+  const drawDay = () => {
+    const evs = eventosDe(selDay);
+    $('#hDayT', el).innerHTML = selDay === today() ? `Agenda de hoy <small>· ${evs.filter(e => !hechoEn(e, selDay)).length} pendiente(s)</small>` : `Agenda del ${flong(selDay)}`;
+    $('#hDay', el).innerHTML = evs.length ? evs.map(e => agItem(e, selDay)).join('') : '<div class="muted" style="padding:14px 4px">Sin actividades para este día. Escriba arriba para agregar una.</div>';
+  };
+  const drawNext = () => {
+    const at = atrasadas(); let h = '';
+    if (at.length) h += `<div class="muted" style="font-size:12px;font-weight:700;margin:2px 0 4px" class="bad-t">⚠ ATRASADAS (${at.length})</div>` + at.slice(0, 6).map(e => agItem(e, toYMD(e.fecha), true)).join('');
+    for (let i = 1; i <= 7; i++) { const f = addDays(today(), i); eventosDe(f).forEach(e => h += agItem(e, f, true)); }
+    $('#hNext', el).innerHTML = h || '<div class="muted" style="padding:14px 4px">Nada programado para los próximos días.</div>';
+    $('#hAtrN', el).textContent = at.length ? `· ${at.length} atrasada(s)` : '';
+  };
+  const drawKpi = () => {
+    const recs = Store.all('recibos').filter(r => !isTrue(r.nulo));
+    const mes = t.slice(0, 7);
+    const hoyT = recs.filter(r => toYMD(r.fecha) === t).reduce((s, r) => s + num(r.pago), 0);
+    const mesT = recs.filter(r => toYMD(r.fecha).startsWith(mes)).reduce((s, r) => s + num(r.pago), 0);
+    const caja = prepCaja(Store.all('cajachica'));
+    const pend = eventosDe(t).filter(e => !hechoEn(e, t)).length;
+    const prest = Store.all('movimientos').filter(m => esPrestamo(m.tipo) && !isTrue(m.devuelto)).length;
+    const ex = existencias(); const bajos = Store.all('articulos').filter(a => num(a.stock_min) && (ex[a._id] || {}).disp <= num(a.stock_min)).length;
+    const comp = Store.all('compras').filter(c => !/PAGADO|ANULADO/.test(c.estado || '')).length;
+    const fondo = num(CFG.caja.fondo);
+    const k = (l, v, s, cls, go) => `<div class="kpi ${cls || ''}" ${go ? `data-go="${go}"` : ''}><div class="l">${l}</div><div class="v">${v}</div><div class="s">${s || ''}</div></div>`;
+    $('#hKpi', el).innerHTML =
+      k('Cobrado hoy', money(hoyT), recs.filter(r => toYMD(r.fecha) === t).length + ' recibo(s)', '', 'm:recibos') +
+      k('Cobrado este mes', money(mesT), cap(MESES[new Date().getMonth()]), '', 'r:mes') +
+      k('Saldo caja chica', money(caja.saldo), 'Caja C' + caja.caja + ' · fondo ' + money(fondo), fondo && caja.saldo <= fondo * num(CFG.caja.alertaPct) ? 'bad' : 'ok', 'c:panel') +
+      k('Pendientes hoy', pend, 'actividades', pend ? 'warn' : 'ok', 'a:pend') +
+      k('Atrasadas', atrasadas().length, 'tareas sin completar', atrasadas().length ? 'bad' : 'ok', 'a:pend') +
+      k('Préstamos', prest, 'sin devolver', prest ? 'warn' : '', 'b:prest') +
+      k('Bajo mínimo', bajos, 'artículos de bodega', bajos ? 'bad' : '', 'b:exist') +
+      k('Compras en proceso', comp, 'sin pagar', '', 'm:compras');
+  };
+  const drawAlerts = () => {
+    const al = [];
+    const ctrl = controlRecibos(); if (ctrl.alertas.length) al.push(`<a data-go="r:control">⚠ ${ctrl.alertas.length} recibo(s) con alertas de digitación</a>`);
+    if (ctrl.saltados.length) al.push(`<a data-go="r:control">⚠ ${ctrl.saltados.length} N° de recibo saltado(s)</a>`);
+    const caja = prepCaja(Store.all('cajachica')); const fondo = num(CFG.caja.fondo);
+    if (fondo && caja.saldo <= fondo * num(CFG.caja.alertaPct)) al.push(`<a data-go="c:reembolso">💵 Caja chica con saldo bajo (${money(caja.saldo)}): solicite reembolso</a>`);
+    const sinEnt = Store.all('unif_ventas').filter(v => !isTrue(v.entregado)).length; if (sinEnt) al.push(`<a data-go="m:unif_ventas">👕 ${sinEnt} venta(s) de uniformes sin entregar</a>`);
+    const venc = Store.all('movimientos').filter(m => esPrestamo(m.tipo) && !isTrue(m.devuelto) && m.f_devolucion && toYMD(m.f_devolucion) < today()).length; if (venc) al.push(`<a data-go="b:prest">📦 ${venc} préstamo(s) vencido(s)</a>`);
+    const n = Sync.queued(); if (n) al.push(`<a data-go="cfg:sync">☁️ ${n} cambio(s) sin subir a Drive</a>`);
+    $('#hAlerts', el).innerHTML = `<h3>Alertas</h3>` + (al.length ? al.map(a => `<div class="alert warn" style="margin-bottom:6px;cursor:pointer">${a}</div>`).join('') : '<div class="alert ok" style="margin:0">✔ Todo en orden.</div>');
+  };
+  const drawNx = () => {
+    const now = new Date(), hm = pad2(now.getHours()) + ':' + pad2(now.getMinutes()), t0 = today();
+    let nx = null;
+    for (let i = 0; i < 15 && !nx; i++) { const f = addDays(t0, i); nx = eventosDe(f).filter(e => !hechoEn(e, f) && (i > 0 || !e.hora || e.hora >= hm)).map(e => ({ e, f }))[0] || null; }
+    $('#hNx', el).innerHTML = nx ? `⏭️ Próxima actividad · ${nx.f === t0 ? 'hoy' : nx.f === addDays(t0, 1) ? 'mañana' : flong(nx.f)}${nx.e.hora ? ' a las ' + nx.e.hora : ''}<b>${esc(nx.e.titulo)}</b>` : '⏭️ No hay actividades próximas. ¡Anote la siguiente abajo!';
+    const evs = eventosDe(t0);
+    $('#hSt', el).innerHTML = `<span><b>${evs.length}</b>actividades hoy</span><span><b>${evs.filter(e => hechoEn(e, t0)).length}</b>completadas</span><span><b>${atrasadas().length}</b>atrasadas</span>`;
+  };
+  const all = () => { cal.draw(); drawDay(); drawNext(); drawKpi(); drawAlerts(); drawNx(); };
+  bindAgenda($('#hDay', el), all); bindAgenda($('#hNext', el), all);
+  el.addEventListener('click', e => { const g = e.target.closest('[data-go]'); if (g) go(g.dataset.go); });
+  const quick = async () => {
+    const tt = $('#qT', el).value.trim(); if (!tt) return;
+    await Store.save('agenda', { titulo: tt, fecha: selDay, hora: $('#qH', el).value, recordar: $('#qR', el).value === '' ? '' : num($('#qR', el).value), tipo: 'Actividad', prioridad: 'Media', repetir: 'No' });
+    $('#qT', el).value = ''; $('#qH', el).value = ''; toast('Actividad agregada', 'ok', 1400); all(); Notif.ask();
+  };
+  $('#qB', el).onclick = quick; $('#qT', el).addEventListener('keydown', e => { if (e.key === 'Enter') quick(); });
+  all(); tickClock();
+  return all;
+});
+
+function semanaISO(d) { const t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())); const dn = t.getUTCDay() || 7; t.setUTCDate(t.getUTCDate() + 4 - dn); const y0 = new Date(Date.UTC(t.getUTCFullYear(), 0, 1)); return Math.ceil(((t - y0) / 86400000 + 1) / 7); }
+function tickClock() {
+  const d = new Date();
+  const hh = d.getHours(), h12 = ((hh + 11) % 12) + 1;
+  const tc = $('#topclock'); if (tc) tc.textContent = `${DIAS[d.getDay()].slice(0, 3)} ${fdate(ymd(d))} · ${pad2(h12)}:${pad2(d.getMinutes())} ${hh < 12 ? 'a. m.' : 'p. m.'}`;
+  const c = $('#hClock'); if (!c) return;
+  c.innerHTML = `${pad2(h12)}:${pad2(d.getMinutes())}<small>:${pad2(d.getSeconds())} ${hh < 12 ? 'a. m.' : 'p. m.'}</small>`;
+  $('#hDate').textContent = `${cap(DIAS[d.getDay()])}, ${flong(ymd(d))}`;
+  $('#hGreet').textContent = (hh < 12 ? '☀️ Buenos días' : hh < 18 ? '🌤️ Buenas tardes' : '🌙 Buenas noches') + ' · ' + (CFG.inst.area || 'Suministros') + ' · Año de trabajo ' + Store.year;
+  $('#hW').innerHTML = `Semana ${semanaISO(d)}<br>Día ${Math.floor((d - new Date(d.getFullYear(), 0, 0)) / 86400000)} del año`;
+}
+
+/* ---------- CALENDARIO (mes / semana / lista + panel del día) ---------- */
+defView('a:cal', 'Calendario', el => {
+  const st = { ref: new Date(), sel: today(), modo: LS.get('calModo', 'mes'), oc: new Set(LS.get('calOcultos', [])), pend: LS.get('calPend', false) };
+  st.ref.setDate(1);
+  el.innerHTML = `<div class="bar"><button class="iconbtn" data-nav="-1">◀</button><button class="btn sm" data-nav="0">Hoy</button><button class="iconbtn" data-nav="1">▶</button><b id="cTit" style="font-size:16px;min-width:190px"></b>
+      <div class="chips">${[['mes', 'Mes'], ['sem', 'Semana'], ['lista', 'Lista']].map(([k, l]) => `<span class="chip" data-modo="${k}">${l}</span>`).join('')}</div>
+      <label class="chk" style="margin-left:8px"><input type="checkbox" id="cPend" ${st.pend ? 'checked' : ''}> Solo pendientes</label><span class="sp"></span>
+      <button class="btn" id="cPr">🖨️ Imprimir mes</button><button class="btn pri" id="cNew">+ Nueva actividad</button></div>
+    <div class="chips" id="cTipos" style="margin-bottom:10px"></div>
+    <div class="calwrap"><div class="card" id="cMain" style="margin:0"></div><div class="card dayp" id="cDay" style="margin:0"></div></div>`;
+  const visibles = (f) => eventosDe(f).filter(e => !st.oc.has(e.tipo || 'Actividad') && (!st.pend || !hechoEn(e, f)));
+  const chip = (e, f) => { const done = hechoEn(e, f); return `<div class="ev ${done ? 'done' : ''} ${e.tipo === 'Nota' ? 'nota' : ''}" data-ev="${e._id}" data-f="${f}" draggable="${esRep(e) ? 'false' : 'true'}" style="${e.tipo === 'Nota' ? '' : `background:${colorTipo(e.tipo)}`}" title="${esc((e.hora || '') + ' ' + e.titulo + (e.descripcion ? '\n' + e.descripcion : ''))}">${e.tipo === 'Nota' ? '📝 ' : ''}${done ? '✔ ' : ''}${esc((e.hora ? e.hora + ' ' : '') + e.titulo)}</div>`; };
+  const celda = (d, mesActual) => {
+    const f = ymd(d), t = today(), evs = visibles(f), pend = eventosDe(f).filter(e => !hechoEn(e, f)).length;
+    return `<div class="dd ${mesActual !== undefined && d.getMonth() !== mesActual ? 'out' : ''} ${f === t ? 'today' : ''} ${f === st.sel ? 'sel' : ''} ${pend && f < t ? 'late' : ''}" data-d="${f}">
+      <div class="dh"><span class="n">${d.getDate()}</span>${pend ? `<b class="pc ${f < t ? 'bad' : ''}" title="${pend} pendiente(s)">${pend}</b>` : ''}</div>
+      ${evs.slice(0, 4).map(e => chip(e, f)).join('')}${evs.length > 4 ? `<div class="muted" style="font-size:11px">+${evs.length - 4} más</div>` : ''}</div>`;
+  };
+  const drawMain = () => {
+    const y = st.ref.getFullYear(), m = st.ref.getMonth(); const main = $('#cMain', el);
+    $$('[data-modo]', el).forEach(c => c.classList.toggle('on', c.dataset.modo === st.modo));
+    $('#cTipos', el).innerHTML = tiposAg().map(t => `<span class="chip ${st.oc.has(t) ? '' : 'on'}" data-tipo="${esc(t)}" style="${st.oc.has(t) ? '' : `background:${colorTipo(t)};border-color:${colorTipo(t)};color:#fff`}">${t === 'Nota' ? '📝 ' : ''}${esc(t)}</span>`).join('') + '<span class="muted" style="font-size:12px;align-self:center">· clic para mostrar/ocultar · arrastre una actividad a otro día para moverla</span>';
+    if (st.modo === 'mes') {
+      $('#cTit', el).textContent = `${cap(MESES[m])} ${y}`;
+      const first = new Date(y, m, 1), start = new Date(first); start.setDate(1 - ((first.getDay() + 6) % 7));
+      let cells = ''; for (let i = 0; i < 42; i++) { const d = new Date(start); d.setDate(start.getDate() + i); cells += celda(d, m); }
+      main.innerHTML = `<div class="cal big"><div class="cg">${['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'].map(x => `<div class="dw">${x}</div>`).join('')}${cells}</div></div>`;
+    } else if (st.modo === 'sem') {
+      const s0 = dobj(st.sel); s0.setDate(s0.getDate() - ((s0.getDay() + 6) % 7));
+      const dias = Array.from({ length: 7 }, (_, i) => { const d = new Date(s0); d.setDate(s0.getDate() + i); return d; });
+      $('#cTit', el).textContent = `Semana del ${dias[0].getDate()} de ${MESES[dias[0].getMonth()]} al ${dias[6].getDate()} de ${MESES[dias[6].getMonth()]}`;
+      main.innerHTML = `<div class="cal big wk"><div class="cg">${dias.map(d => `<div class="dw">${cap(DIAS[d.getDay()]).slice(0, 3)} ${d.getDate()}</div>`).join('')}${dias.map(d => celda(d)).join('')}</div></div>`;
+      $$('.wk .dd', main).forEach(dd => { const f = dd.dataset.d; const evs = visibles(f); dd.innerHTML = dd.querySelector('.dh').outerHTML + (evs.map(e => chip(e, f)).join('') || '<div class="muted" style="font-size:11px;margin-top:6px">—</div>'); });
+    } else {
+      $('#cTit', el).textContent = `${cap(MESES[m])} ${y}`;
+      const n = new Date(y, m + 1, 0).getDate(); let h = '';
+      for (let dd = 1; dd <= n; dd++) { const f = `${y}-${pad2(m + 1)}-${pad2(dd)}`; const evs = visibles(f); if (!evs.length) continue; h += `<div class="ldia ${f === today() ? 'hoy' : ''}"><div class="ldh" data-d="${f}">${cap(DIAS[dobj(f).getDay()])} ${dd}</div><div class="ag-list">${evs.map(e => agItem(e, f)).join('')}</div></div>`; }
+      main.innerHTML = h || '<div class="empty">No hay actividades este mes con los filtros elegidos.</div>';
+    }
+  };
+  const drawDay = () => {
+    const f = st.sel, d = dobj(f), evs = eventosDe(f), pend = evs.filter(e => !hechoEn(e, f));
+    const at = f === today() ? atrasadas() : [];
+    $('#cDay', el).innerHTML = `<h3>${cap(DIAS[d.getDay()])} ${d.getDate()} de ${MESES[d.getMonth()]} <small>· ${pend.length} pendiente(s)</small></h3>
+      <div class="qadd"><textarea class="in" id="qN" rows="3" placeholder="✍️ Escriba una nota, recordatorio o tarea para este día…&#10;Enter = guardar · Shift+Enter = nueva línea"></textarea>
+        <div class="bar" style="margin:6px 0 0"><select class="in" id="qTp" style="width:auto">${tiposAg().map(t => `<option ${t === LS.get('qTipo', 'Nota') ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>
+        <input class="in" type="time" id="qHr" style="width:110px" title="Hora (opcional)"><select class="in" id="qAv" style="width:auto" title="Aviso">${RECORDAR.map(o => `<option value="${o.v}">🔔 ${o.l}</option>`).join('')}</select>
+        <select class="in" id="qPr" style="width:auto">${lista('prioridades').map(x => `<option ${x === 'Media' ? 'selected' : ''}>${x}</option>`).join('')}</select><button class="btn pri" id="qOk">Guardar</button></div></div>
+      <div id="dList" style="margin-top:10px">${evs.length ? evs.map(e => agItem(e, f) + (e.tipo === 'Nota' && e.descripcion ? `<div class="nota-txt">${esc(e.descripcion)}</div>` : '')).join('') : '<div class="muted" style="padding:10px 2px">Nada anotado para este día.</div>'}</div>
+      ${at.length ? `<h3 style="margin-top:14px" class="bad-t">⚠ Atrasadas (${at.length})</h3><div id="dAt">${at.slice(0, 15).map(e => agItem(e, toYMD(e.fecha), true)).join('')}</div>` : ''}
+      <div class="bar" style="margin-top:12px"><button class="btn sm" id="dForm">＋ Con todos los detalles</button><button class="btn sm" id="dAg">📋 Ver en agenda</button></div>`;
+    const qa = $('#qAv', el); const tp = $('#qTp', el);
+    const avDef = () => { qa.value = tp.value === 'Nota' ? '' : (tp.value === 'Recordatorio' ? '0' : '15'); };
+    avDef(); tp.onchange = () => { LS.set('qTipo', tp.value); avDef(); };
+    const guardar = async () => {
+      const txt = $('#qN', el).value.trim(); if (!txt) return;
+      const [t0, ...resto] = txt.split('\n');
+      const titulo = t0.length > 120 ? t0.slice(0, 117) + '…' : t0, desc = (t0.length > 120 ? t0 + '\n' : '') + resto.join('\n');
+      const hora = $('#qHr', el).value;
+      await Store.save('agenda', { titulo, descripcion: desc.trim(), tipo: tp.value, fecha: f, hora, recordar: qa.value === '' ? '' : num(qa.value), prioridad: $('#qPr', el).value, repetir: 'No' });
+      if (qa.value !== '' && !hora) toast('Sin hora: el aviso sonará a las 7:00 a. m. de ese día', '', 3500);
+      toast('Anotado ✔', 'ok', 1200); Notif.ask(); all(); setTimeout(() => $('#qN', el) && $('#qN', el).focus(), 30);
+    };
+    $('#qOk', el).onclick = guardar;
+    $('#qN', el).addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); guardar(); } });
+    $('#dForm', el).onclick = () => openForm('agenda', { fecha: f, tipo: tp.value }, { onDone: all });
+    $('#dAg', el).onclick = () => go('m:agenda');
+  };
+  const all = () => { drawMain(); drawDay(); };
+  // eventos
+  el.addEventListener('click', e => {
+    const nv = e.target.closest('[data-nav]');
+    if (nv) { const n = Number(nv.dataset.nav); if (st.modo === 'sem') { st.sel = n === 0 ? today() : addDays(st.sel, 7 * n); st.ref = dobj(st.sel); st.ref.setDate(1); } else if (n === 0) { st.ref = new Date(); st.ref.setDate(1); st.sel = today(); } else st.ref.setMonth(st.ref.getMonth() + n); all(); return; }
+    const md = e.target.closest('[data-modo]'); if (md) { st.modo = md.dataset.modo; LS.set('calModo', st.modo); drawMain(); return; }
+    const tc = e.target.closest('[data-tipo]'); if (tc) { const t = tc.dataset.tipo; st.oc.has(t) ? st.oc.delete(t) : st.oc.add(t); LS.set('calOcultos', [...st.oc]); drawMain(); return; }
+    const evc = e.target.closest('#cMain .ev[data-ev]'); if (evc) { const ev = Store.get('agenda', evc.dataset.ev); if (ev) openForm('agenda', ev, { onDone: all }); return; }
+    const dd = e.target.closest('#cMain [data-d]'); if (dd) { st.sel = dd.dataset.d; all(); return; }
+  });
+  el.addEventListener('dblclick', e => { const dd = e.target.closest('#cMain [data-d]'); if (dd) { st.sel = dd.dataset.d; all(); setTimeout(() => $('#qN', el).focus(), 30); } });
+  $('#cPend', el).onchange = e => { st.pend = e.target.checked; LS.set('calPend', st.pend); drawMain(); };
+  bindAgenda($('#cDay', el), all); bindAgenda($('#cMain', el), all);
+  // arrastrar y soltar para cambiar de fecha
+  el.addEventListener('dragstart', e => { const c = e.target.closest('.ev[data-ev]'); if (!c) return; e.dataTransfer.setData('text/plain', c.dataset.ev); e.dataTransfer.effectAllowed = 'move'; });
+  el.addEventListener('dragover', e => { const dd = e.target.closest('#cMain .dd[data-d]'); if (!dd) return; e.preventDefault(); $$('.drop-over', el).forEach(x => x.classList.remove('drop-over')); dd.classList.add('drop-over'); });
+  el.addEventListener('dragleave', e => { const dd = e.target.closest('.dd'); if (dd && !dd.contains(e.relatedTarget)) dd.classList.remove('drop-over'); });
+  el.addEventListener('drop', async e => {
+    const dd = e.target.closest('#cMain .dd[data-d]'); if (!dd) return; e.preventDefault(); dd.classList.remove('drop-over');
+    const ev = Store.get('agenda', e.dataTransfer.getData('text/plain')); if (!ev) return;
+    if (esRep(ev)) return toast('Es una actividad que se repite: ábrala para cambiar su fecha de inicio.', 'bad');
+    if (toYMD(ev.fecha) === dd.dataset.d) return;
+    await Store.save('agenda', Object.assign({}, ev, { fecha: dd.dataset.d })); toast(`Movida al ${flong(dd.dataset.d)}`, 'ok', 1800); st.sel = dd.dataset.d; all();
+  });
+  $('#cNew', el).onclick = () => openForm('agenda', { fecha: st.sel }, { onDone: all });
+  $('#cPr', el).onclick = () => {
+    const y = st.ref.getFullYear(), m = st.ref.getMonth(), n = new Date(y, m + 1, 0).getDate(); const rows = [];
+    for (let d = 1; d <= n; d++) { const f = `${y}-${pad2(m + 1)}-${pad2(d)}`; eventosDe(f).filter(e => !st.oc.has(e.tipo || 'Actividad')).forEach(e => rows.push(`<tr><td>${cap(DIAS[dobj(f).getDay()]).slice(0, 3)} ${d}</td><td>${esc(e.hora || '')}</td><td>${e.tipo === 'Nota' ? '📝 ' : ''}${esc(e.titulo)}${e.descripcion ? '<br><small>' + esc(e.descripcion) + '</small>' : ''}</td><td>${esc(e.tipo || '')}</td><td class="c">${hechoEn(e, f) ? '✔' : '☐'}</td></tr>`)); }
+    Print.show('Agenda del mes', `<div class="page">${membrete()}<div class="ptitle">AGENDA DE ${MESES[m].toUpperCase()} ${y}</div>${ptable([{ l: 'Día', w: '55px' }, { l: 'Hora', w: '45px' }, 'Actividad / nota', { l: 'Tipo', w: '80px' }, { l: 'Hecho', w: '40px' }], rows.length ? rows : ['<tr><td colspan="5">Sin actividades</td></tr>'])}</div>`);
+  };
+  all();
+  return all;
+});
+
+/* ---------- TAREAS PENDIENTES ---------- */
+defView('a:pend', 'Tareas pendientes', el => {
+  el.innerHTML = `<div class="bar"><input class="in" id="pT" placeholder="✍️ Nueva tarea… (Enter)" style="flex:1"><input class="in" type="date" id="pF" title="Fecha límite (opcional)"><select class="in" id="pP">${lista('prioridades').map(p => `<option ${p === 'Media' ? 'selected' : ''}>${p}</option>`).join('')}</select><button class="btn pri" id="pB">+ Agregar</button><button class="btn" id="pPr">🖨️ Imprimir lista</button></div><div id="pL"></div>`;
+  const draw = () => {
+    const t = today();
+    const ev = Store.all('agenda').filter(e => !esRep(e) && !isTrue(e.hecho));
+    const grupos = [['⚠ Atrasadas', ev.filter(e => toYMD(e.fecha) && toYMD(e.fecha) < t)], ['📌 Hoy', ev.filter(e => toYMD(e.fecha) === t)], ['🗓️ Próximas', ev.filter(e => toYMD(e.fecha) > t)], ['📝 Sin fecha', ev.filter(e => !toYMD(e.fecha))]];
+    const hechas = Store.all('agenda').filter(e => !esRep(e) && isTrue(e.hecho) && toYMD(e.f_hecho) >= addDays(t, -7));
+    $('#pL', el).innerHTML = grupos.map(([g, arr]) => arr.length ? `<div class="card"><h3>${g} <small>(${arr.length})</small></h3>${arr.sort((a, b) => String(a.fecha).localeCompare(b.fecha) || ['Alta', 'Media', 'Baja'].indexOf(a.prioridad) - ['Alta', 'Media', 'Baja'].indexOf(b.prioridad)).map(e => agItem(e, toYMD(e.fecha) || t, true)).join('')}</div>` : '').join('')
+      + (hechas.length ? `<div class="card"><h3>✔ Completadas en los últimos 7 días <small>(${hechas.length})</small></h3>${hechas.map(e => agItem(e, toYMD(e.fecha) || t, true)).join('')}</div>` : '')
+      || '<div class="empty">🎉 No hay tareas pendientes.</div>';
+  };
+  bindAgenda($('#pL', el), draw);
+  const add = async () => { const tt = $('#pT', el).value.trim(); if (!tt) return; await Store.save('agenda', { titulo: tt, tipo: 'Tarea', fecha: $('#pF', el).value, prioridad: $('#pP', el).value, repetir: 'No', recordar: $('#pF', el).value ? 0 : '' }); $('#pT', el).value = ''; draw(); };
+  $('#pB', el).onclick = add; $('#pT', el).addEventListener('keydown', e => { if (e.key === 'Enter') add(); });
+  $('#pPr', el).onclick = printPendientes;
+  draw(); return draw;
+});
+function printPendientes() {
+  const ev = Store.all('agenda').filter(e => !esRep(e) && !isTrue(e.hecho)).sort((a, b) => String(a.fecha || '9999').localeCompare(b.fecha || '9999'));
+  const rows = ev.map((e, i) => `<tr><td class="c" style="font-size:15px">☐</td><td>${esc(e.titulo)}${e.descripcion ? `<br><small>${esc(e.descripcion)}</small>` : ''}</td><td>${fdate(e.fecha)}</td><td>${esc(e.prioridad || '')}</td><td></td></tr>`);
+  for (let i = 0; i < Math.max(8, 25 - ev.length); i++) rows.push('<tr><td class="c" style="font-size:15px">☐</td><td></td><td></td><td></td><td></td></tr>');
+  Print.show('Lista de tareas pendientes', `<div class="page">${membrete()}<div class="ptitle">LISTA DE TAREAS PENDIENTES</div><div class="psub">Al ${flong(today())}</div>${ptable([{ l: '¿Hecho?', w: '50px' }, 'Tarea', { l: 'Fecha límite', w: '80px' }, { l: 'Prioridad', w: '65px' }, { l: 'Observación', w: '150px' }], rows, { cls: 'lined' })}</div>`);
+}
+
+/* ---------- NOTIFICACIONES ---------- */
+const Notif = {
+  fired: LS.get('notifFired', {}),
+  snooze: {},
+  audio: null,
+  ask() {
+    try { if (CFG.notif.escritorio && window.Notification && Notification.permission === 'default') Notification.requestPermission(); } catch (e) { }
+  },
+  beep() {
+    if (!CFG.notif.sonido) return;
+    try {
+      const ac = this.audio || (this.audio = new (window.AudioContext || window.webkitAudioContext)());
+      [0, .25, .5].forEach(t => { const o = ac.createOscillator(), g = ac.createGain(); o.frequency.value = 880; o.connect(g); g.connect(ac.destination); g.gain.setValueAtTime(.18, ac.currentTime + t); g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + t + .2); o.start(ac.currentTime + t); o.stop(ac.currentTime + t + .21); });
+    } catch (e) { }
+  },
+  check(silentNow) {
+    if (!CFG) return;
+    const now = Date.now(), t = today();
+    let changed = false;
+    for (const f of [t, addDays(t, 1)]) {
+      for (const ev of Store.all('agenda')) {
+        if (ev.recordar === '' || ev.recordar === undefined || ev.recordar === null) continue;
+        if (!ocurre(ev, f) || hechoEn(ev, f)) continue;
+        const key = ev._id + '|' + f;
+        const at = new Date(f + 'T' + (ev.hora || '07:00') + ':00').getTime() - num(ev.recordar) * 60000;
+        const sz = this.snooze[key];
+        if (sz && now < sz) continue;
+        if (now >= at && now - at < 12 * 3600000 && (!this.fired[key] || sz)) {
+          this.fired[key] = now; delete this.snooze[key]; changed = true;
+          this.fire(ev, f, key);
+        }
+      }
+    }
+    if (changed) { const lim = now - 3 * 86400000; for (const k in this.fired) if (this.fired[k] < lim) delete this.fired[k]; LS.set('notifFired', this.fired); }
+  },
+  fire(ev, f, key) {
+    const cuando = (f === today() ? 'Hoy' : 'Mañana') + (ev.hora ? ' a las ' + ev.hora : '');
+    const d = toast(`<b>🔔 ${esc(ev.titulo)}</b>${esc(cuando)}${ev.lugar ? ' · ' + esc(ev.lugar) : ''}<div style="margin-top:8px;display:flex;gap:6px"><button class="btn sm" data-a="ok">✔ Hecha</button><button class="btn sm" data-a="sz">⏰ 10 min</button><button class="btn sm" data-a="x">Cerrar</button></div>`, 'alarm', 10 * 60000);
+    d.onclick = async e => { const a = e.target.dataset.a; if (!a) return; if (a === 'ok') { await toggleHecho(ev, f, true); if (CUR.v === 'home' || CUR.v === 'a:pend') go(CUR.v); } if (a === 'sz') this.snooze[key] = Date.now() + 10 * 60000; d.remove(); };
+    this.beep();
+    try { if (CFG.notif.escritorio && window.Notification && Notification.permission === 'granted') new Notification('🔔 ' + ev.titulo, { body: cuando + (ev.descripcion ? '\n' + ev.descripcion : ''), tag: key }); } catch (e) { }
+    let n = 0; const orig = document.title; const iv = setInterval(() => { document.title = (n++ % 2 ? orig : '🔔 ' + ev.titulo); if (n > 12) { clearInterval(iv); document.title = orig; } }, 1000);
+  }
+};
+
+/* ======================= LIBRETA DE NOTAS (modos A · C · D) ======================= */
+defMod({ key: 'notas', label: 'Libreta de notas', scope: 'g', noNew: 1, fields: [
+  { k: 'titulo', l: 'Título', t: 'text' }, { k: 'seccion', l: 'Sección', t: 'select', o: () => seccionesNotas() }, { k: 'fijada', l: 'Fijada', t: 'check' },
+  { k: 'color', l: 'Color', t: 'text', hide: 1 }, { k: 'html', l: 'Contenido', t: 'text', hide: 1 }, { k: 'enlaces', l: 'Vínculos', t: 'text', hide: 1 }, { k: 'esp', l: 'Especial', t: 'text', hide: 1 },
+  { k: 'texto', l: 'Contenido', t: 'calc', fn: r => notaTexto(r).slice(0, 120) }],
+  table: ['titulo', 'seccion', 'texto', 'fijada'], sort: { k: 'titulo', dir: 1 }, onRow: r => NB.abrir(r._id) });
+const seccionesNotas = () => ['General', ...((CFG.notas && CFG.notas.secciones) || []).filter(x => x !== 'General')];
+const NOTA_COLORES = ['', '#fff59d', '#b3e5fc', '#c8e6c9', '#f8bbd0', '#e1bee7', '#ffe0b2'];
+function notaTexto(n) { const d = document.createElement('div'); d.innerHTML = String(n.html || '').replace(/<(div|p|br|li)[^>]*>/gi, '\n$&'); return d.textContent.replace(/\n{2,}/g, '\n').trim(); }
+const pendDe = n => (String(n.html || '').match(/<div class="tk">/g) || []).length;
+const hechosDe = n => (String(n.html || '').match(/<div class="tk ok">/g) || []).length;
+const notasTodas = () => Store.all('notas').sort((a, b) => (isTrue(b.fijada) - isTrue(a.fijada)) || num(b._upd) - num(a._upd));
+const cuandoTxt = u => { const d = new Date(num(u)); if (!num(u)) return ''; const t = today(), f = ymd(d); return f === t ? 'hoy ' + d.toTimeString().slice(0, 5) : f === addDays(t, -1) ? 'ayer' : fdate(f); };
+function limpiarHtml(h) {
+  const d = document.createElement('div'); d.innerHTML = h;
+  d.querySelectorAll('script,style,iframe,object,img').forEach(x => x.remove());
+  d.querySelectorAll('*').forEach(x => { [...x.attributes].forEach(a => { if (!(a.name === 'class' && /^tk( ok)?$/.test(a.value)) && !(a.name === 'style' && x.tagName === 'SPAN' && /background/.test(a.value))) x.removeAttribute(a.name); }); });
+  return d.innerHTML;
+}
+async function notaEspecial(esp, titulo, seccion) {
+  let n = Store.all('notas').find(x => x.esp === esp);
+  if (!n) n = await Store.save('notas', { _id: 'nota_' + esp, esp, titulo, seccion, html: '', fijada: esp === 'pend' });
+  return n;
+}
+/** Editor de una nota (se usa en los tres modos) */
+function editorNota(host, id, o = {}) {
+  let n = Store.get('notas', id); if (!n) { host.innerHTML = '<div class="empty">Elija o cree una nota.</div>'; return; }
+  let links = []; try { links = JSON.parse(n.enlaces || '[]'); } catch (e) { }
+  const full = !!o.full;
+  host.innerHTML = `<div class="ned">
+    ${o.sinTitulo ? '' : `<input class="in ned-t" value="${esc(n.titulo || '')}" placeholder="Título de la nota">`}
+    <div class="ned-bar"><button type="button" data-x="bold" title="Negrita"><b>N</b></button><button type="button" data-x="italic" title="Cursiva"><i>K</i></button><button type="button" data-x="lista" title="Lista">• Lista</button><button type="button" data-x="tarea" title="Casilla de tarea">☐ Tarea</button><button type="button" data-x="res" title="Resaltar">🖍</button>
+      <span class="sp"></span>${o.sinTitulo ? '' : `<select data-x="sec" title="Sección">${seccionesNotas().map(x => `<option ${x === (n.seccion || 'General') ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>`}</div>
+    <div class="ned-c" contenteditable="true" spellcheck="true" style="${n.color ? `border-left:6px solid ${n.color}` : ''}">${n.html || ''}</div>
+    ${full ? `<div class="ned-links">${links.map((l, i) => `<span class="tag" data-li="${i}" style="cursor:pointer">🔗 ${esc(l.l)} <b data-lx="${i}">✕</b></span>`).join('')}</div>` : ''}
+    <div class="ned-f"><button type="button" class="btn sm" data-x="fijar">${isTrue(n.fijada) ? '📌 Fijada' : '📌 Fijar'}</button><button type="button" class="btn sm" data-x="agenda" title="Crear un recordatorio con esta nota o con el texto seleccionado">🔔 Pasar a agenda</button>
+      <span class="ned-col">${NOTA_COLORES.map(c => `<i data-c="${c}" style="background:${c || 'var(--card)'}" class="${(n.color || '') === c ? 'on' : ''}" title="Color"></i>`).join('')}</span>
+      ${full ? '<button type="button" class="btn sm" data-x="vinc">🔗 Vincular</button><button type="button" class="btn sm" data-x="print">🖨️</button>' : ''}
+      <span class="sp"></span><span class="muted ned-st" style="font-size:11.5px"></span>${n.esp ? '' : '<button type="button" class="btn sm danger" data-x="del" title="Eliminar nota">🗑</button>'}</div></div>`;
+  const ed = $('.ned-c', host), st = $('.ned-st', host), tt = $('.ned-t', host);
+  let tmr = null;
+  const guardar = async (extra = {}) => { clearTimeout(tmr); n = Object.assign({}, Store.get('notas', id) || n, { html: limpiarHtml(ed.innerHTML), titulo: tt ? tt.value.trim() || 'Sin título' : n.titulo }, extra); await Store.save('notas', n); st.textContent = '✔ guardado'; o.onChange && o.onChange(n); NB.badge(); };
+  const pronto = () => { st.textContent = 'escribiendo…'; clearTimeout(tmr); tmr = setTimeout(guardar, 700); };
+  ed.addEventListener('input', () => { $$('.tk.ok', ed).forEach(t => { if (!t.textContent.trim()) t.className = 'tk'; }); pronto(); });
+  if (tt) tt.addEventListener('input', pronto);
+  ed.addEventListener('paste', e => { e.preventDefault(); document.execCommand('insertText', false, (e.clipboardData || window.clipboardData).getData('text')); });
+  ed.addEventListener('mousedown', e => { const t = e.target.closest('.tk'); if (t && e.offsetX < 22) { e.preventDefault(); t.classList.toggle('ok'); guardar(); } });
+  ed.addEventListener('keydown', e => { if (e.key === 'Escape') { e.stopPropagation(); guardar(); NB.cerrar(); } });
+  const bloque = () => { const sel = getSelection(); if (!sel.rangeCount) return null; let b = sel.anchorNode; while (b && b !== ed && !(b.nodeType === 1 && /^(DIV|P|LI)$/.test(b.tagName) && b.parentNode === ed)) b = b.parentNode; return b && b !== ed ? b : null; };
+  $$('[data-x]', host).forEach(b => { const x = b.dataset.x; if (x === 'sec') { b.onchange = () => guardar({ seccion: b.value }); return; }
+    b.onmousedown = e => { if (b.tagName === 'BUTTON') e.preventDefault(); };
+    b.onclick = async () => {
+      if (x === 'bold' || x === 'italic') document.execCommand(x);
+      else if (x === 'lista') document.execCommand('insertUnorderedList');
+      else if (x === 'res') document.execCommand('hiliteColor', false, '#ffe56680');
+      else if (x === 'tarea') { ed.focus(); let bl = bloque(); if (!bl) { document.execCommand('formatBlock', false, 'div'); bl = bloque(); } if (!bl) { ed.insertAdjacentHTML('beforeend', '<div class="tk"><br></div>'); } else if (bl.tagName === 'DIV') bl.className = bl.className ? '' : 'tk'; else { const d = document.createElement('div'); d.className = 'tk'; d.innerHTML = bl.innerHTML; bl.replaceWith(d); } }
+      else if (x === 'fijar') { await guardar({ fijada: !isTrue(n.fijada) }); b.textContent = isTrue(n.fijada) ? '📌 Fijada' : '📌 Fijar'; o.onChange && o.onChange(n); return; }
+      else if (x === 'agenda') { await guardar(); const sel = String(getSelection()).trim(); openForm('agenda', { titulo: (sel || n.titulo || 'Nota').slice(0, 120), tipo: 'Recordatorio', fecha: today(), descripcion: sel ? '' : notaTexto(n).slice(0, 500) }, { onDone: () => toast('Agregado a la agenda ✔', 'ok') }); return; }
+      else if (x === 'del') { if (!(await confirmBox(`¿Eliminar la nota “${esc(n.titulo || '')}”?`, 'Eliminar'))) return; await Store.remove('notas', id); NB.badge(); o.onDelete && o.onDelete(); return; }
+      else if (x === 'print') { await guardar(); Print.show(n.titulo || 'Nota', `<div class="page">${membrete()}<div class="ptitle">${esc(n.titulo || '')}</div><div class="psub">${esc(n.seccion || '')} · ${flong(today())}</div><div class="ptxt nprint">${n.html}</div></div>`); return; }
+      else if (x === 'vinc') { vincularNota(n, links, () => { editorNota(host, id, o); }); return; }
+      pronto();
+    }; });
+  $$('.ned-col i', host).forEach(c => c.onclick = async () => { await guardar({ color: c.dataset.c }); editorNota(host, id, o); o.onChange && o.onChange(n); });
+  $$('[data-li]', host).forEach(t => t.onclick = e => { const l = links[num(t.dataset.li)]; if (e.target.dataset.lx !== undefined) { links.splice(num(e.target.dataset.lx), 1); guardar({ enlaces: JSON.stringify(links) }).then(() => editorNota(host, id, o)); return; }
+    if (l.t === 'est') { const e2 = Store.get('estudiantes', l.id); if (e2) verFicha(e2); } else if (l.t === 'rec') { const r = Store.get('recibos', l.id); if (r) openRecibo(r); } });
+  if (o.foco) setTimeout(() => { (tt && !tt.value ? tt : ed).focus(); }, 30);
+  return { guardar };
+}
+function vincularNota(n, links, done) {
+  modal('🔗 Vincular nota', `<p class="muted" style="margin-top:0">Vincule un alumno o un recibo para abrirlo con un clic desde la nota.</p><label class="f"><span>Alumno (nombre o NIE)</span><input class="in" id="vnE"></label><label class="f" style="margin-top:8px"><span>o N° de recibo (ej. B-16100)</span><input class="in" id="vnR"></label>`, [{ l: 'Cancelar' }, { l: 'Vincular', pri: 1, fn: async () => {
+    const q = $('#vnR').value.trim().match(/^([a-z])?\s*-?\s*(\d+)$/i);
+    if (q) { const r = Store.all('recibos').find(x => num(x.numero) === num(q[2]) && (!q[1] || String(x.serie).toUpperCase() === q[1].toUpperCase())); if (!r) { toast('No se encontró ese recibo', 'bad'); return false; } links.push({ t: 'rec', id: r._id, l: 'Recibo ' + recNum(r) }); }
+    else if (!$('#vnE').dataset.id) { toast('Elija un alumno de la lista o escriba un recibo', 'bad'); return false; }
+    if ($('#vnE').dataset.id) links.push({ t: 'est', id: $('#vnE').dataset.id, l: $('#vnE').value });
+    await Store.save('notas', Object.assign({}, Store.get('notas', n._id), { enlaces: JSON.stringify(links) })); setTimeout(done, 30); return true; } }], { sm: true });
+  attachAC($('#vnE'), REF.estudiantes, it => { $('#vnE').value = it.row.nombre; $('#vnE').dataset.id = it.row._id; });
+}
+const NB = {
+  modo: () => (CFG.notas && CFG.notas.modo) || 'A', abierto: false, st: { f: 'todas', q: '', sel: null, sec: 'General', tab: 'borrador' },
+  raiz() { let r = $('#nbRoot'); if (!r) { r = document.createElement('div'); r.id = 'nbRoot'; document.body.appendChild(r); } return r; },
+  boton() {
+    if ($('#btnNotas')) return;
+    const b = document.createElement('button'); b.id = 'btnNotas'; b.className = 'nbbtn'; b.title = 'Libreta de notas (Ctrl+Shift+N)';
+    b.innerHTML = '<span id="nbIco">📒</span> <span class="nbl">Libreta</span><b id="nbCount" hidden></b>'; b.onclick = () => NB.toggle();
+    const s = $('#sync'); s.parentNode.insertBefore(b, s);
+    document.addEventListener('keydown', e => { if (e.ctrlKey && e.shiftKey && (e.key === 'N' || e.key === 'n')) { e.preventDefault(); NB.toggle(); } if (e.key === 'Escape' && NB.abierto && $('#modal').classList.contains('hidden')) NB.cerrar(); });
+    document.addEventListener('mousedown', e => { if (NB.abierto && NB.modo() === 'C' && !e.target.closest('#nbRoot,#btnNotas,#modal,.ac-list')) NB.cerrar(); });
+    NB.badge();
+  },
+  badge() { const c = $('#nbCount'); if (!c) return; const n = Store.all('notas').reduce((a, x) => a + pendDe(x), 0); c.hidden = !n; c.textContent = n; const m = NB.modo(); $('#nbIco').textContent = m === 'C' ? '✏️' : m === 'D' ? '📓' : '📒'; $('.nbl', $('#btnNotas')).textContent = m === 'C' ? 'Bloc' : m === 'D' ? 'Cuaderno' : 'Libreta'; },
+  toggle() { NB.abierto ? NB.cerrar() : NB.abrir(); },
+  cerrar() { NB.abierto = false; const r = NB.raiz(); r.className = ''; r.innerHTML = ''; $('#btnNotas') && $('#btnNotas').classList.remove('on'); },
+  abrir(id) { NB.abierto = true; if (id) NB.st.sel = id; const r = NB.raiz(); r.className = 'nb-' + NB.modo(); $('#btnNotas').classList.add('on'); ({ A: NB.A, C: NB.C, D: NB.D }[NB.modo()] || NB.A)(r); },
+  async nueva(extra = {}) { const n = await Store.save('notas', Object.assign({ titulo: '', html: '', seccion: 'General' }, extra)); NB.st.sel = n._id; return n; },
+  lista(filtro) {
+    const q = norm(NB.st.q); return notasTodas().filter(n => (!q || norm(n.titulo + ' ' + notaTexto(n)).includes(q)) && filtro(n));
+  },
+  item(n) { const p = pendDe(n); return `<div class="nb-it ${n._id === NB.st.sel ? 'on' : ''}" data-id="${n._id}" style="${n.color ? `border-left:5px solid ${n.color}` : ''}"><div><b>${isTrue(n.fijada) ? '📌 ' : ''}${esc(n.titulo || 'Sin título')}</b>${p ? ` <span class="tag warn">☐ ${p}</span>` : ''}</div><small>${esc(notaTexto(n).replace(/\n/g, ' · ').slice(0, 70)) || '<i>vacía</i>'} · ${cuandoTxt(n._upd)}</small></div>`; },
+  /* ---- A · panel lateral ---- */
+  A(r) {
+    const f = NB.st.f, todas = Store.all('notas');
+    const filtros = [['todas', 'Todas', todas.length], ['fij', '📌 Fijadas', todas.filter(x => isTrue(x.fijada)).length], ['pend', '☐ Pendientes', todas.filter(x => pendDe(x)).length]];
+    const ls = NB.lista(n => f === 'todas' || (f === 'fij' && isTrue(n.fijada)) || (f === 'pend' && pendDe(n)) || (f.startsWith('s:') && (n.seccion || 'General') === f.slice(2)));
+    if (!NB.st.sel || !Store.get('notas', NB.st.sel)) NB.st.sel = ls[0] ? ls[0]._id : null;
+    r.innerHTML = `<div class="nb-h"><b>📒 Mi libreta</b><span class="sp"></span><button class="btn sm pri" id="nbN">+ Nota</button><button class="iconbtn" id="nbX" title="Cerrar (Esc)">✕</button></div>
+      <input class="in" id="nbQ" placeholder="🔎 Buscar en mis notas…" value="${esc(NB.st.q)}">
+      <div class="nb-f">${filtros.map(([k, l, c]) => `<span class="chip ${f === k ? 'on' : ''}" data-f="${k}">${l} ${c}</span>`).join('')}<select class="in" id="nbS" style="width:auto;padding:3px 6px;font-size:12px"><option value="">Sección…</option>${seccionesNotas().map(x => `<option value="s:${esc(x)}" ${f === 's:' + x ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></div>
+      <div class="nb-ls">${ls.map(NB.item).join('') || '<div class="muted" style="padding:10px">Sin notas.</div>'}</div><div class="nb-ed" id="nbE"></div>`;
+    $('#nbX', r).onclick = () => NB.cerrar();
+    $('#nbN', r).onclick = async () => { await NB.nueva({ seccion: f.startsWith('s:') ? f.slice(2) : 'General' }); NB.A(r); editorNota($('#nbE', r), NB.st.sel, { foco: 1, onChange: () => NB.refLista(r), onDelete: () => { NB.st.sel = null; NB.A(r); } }); };
+    $('#nbQ', r).oninput = debounce(e => { NB.st.q = e.target.value; NB.A(r); setTimeout(() => { const q = $('#nbQ', r); q.focus(); q.setSelectionRange(q.value.length, q.value.length); }, 0); }, 250);
+    $$('[data-f]', r).forEach(c => c.onclick = () => { NB.st.f = c.dataset.f; NB.st.sel = null; NB.A(r); });
+    $('#nbS', r).onchange = e => { NB.st.f = e.target.value || 'todas'; NB.st.sel = null; NB.A(r); };
+    $$('.nb-it', r).forEach(d => d.onclick = () => { NB.st.sel = d.dataset.id; NB.A(r); });
+    if (NB.st.sel) editorNota($('#nbE', r), NB.st.sel, { onChange: () => NB.refLista(r), onDelete: () => { NB.st.sel = null; NB.A(r); } });
+    else $('#nbE', r).innerHTML = '<div class="empty" style="padding:20px">Pulse <b>+ Nota</b> para empezar.</div>';
+  },
+  refLista(r) { const todas = Store.all('notas'), cnt = { todas: todas.length, fij: todas.filter(x => isTrue(x.fijada)).length, pend: todas.filter(x => pendDe(x)).length }; $$('[data-f]', r).forEach(c => { if (c.dataset.f in cnt) c.textContent = c.textContent.replace(/\d+$/, cnt[c.dataset.f]); });
+    const it = r.querySelector(`.nb-it[data-id="${NB.st.sel}"]`); const n = Store.get('notas', NB.st.sel); if (it && n) it.outerHTML = NB.item(n); $$('.nb-it', r).forEach(d => d.onclick = () => { NB.st.sel = d.dataset.id; ({ A: NB.A, D: NB.D }[NB.modo()] || NB.A)(r); }); },
+  /* ---- C · bloc rápido ---- */
+  async C(r) {
+    const b = await notaEspecial('borrador', '✏️ Borrador', 'General'), pe = await notaEspecial('pend', '☐ Pendientes rápidos', 'Pendientes');
+    const tab = NB.st.tab, otras = NB.lista(n => !n.esp);
+    r.innerHTML = `<div class="nb-h"><span class="nb-tabs">${[['borrador', '✏️ Borrador'], ['pend', `☐ Pendientes (${pendDe(pe)})`], ['notas', `📄 Notas (${otras.length})`]].map(([k, l]) => `<span class="${tab === k ? 'on' : ''}" data-t="${k}">${l}</span>`).join('')}</span><span class="sp"></span><span class="muted" style="font-size:11px">Ctrl+Shift+N</span><button class="iconbtn" id="nbX">✕</button></div><div id="nbB"></div>`;
+    $('#nbX', r).onclick = () => NB.cerrar();
+    $$('[data-t]', r).forEach(t => t.onclick = () => { NB.st.tab = t.dataset.t; NB.C(r); });
+    const B = $('#nbB', r);
+    if (tab === 'borrador') { editorNota(B, b._id, { sinTitulo: 1, foco: 1 }); $('.ned-c', B).classList.add('rayado'); }
+    else if (tab === 'pend') {
+      const pintar = () => { const n = Store.get('notas', pe._id); const d = document.createElement('div'); d.innerHTML = n.html || ''; const tks = $$('.tk', d);
+        B.innerHTML = `<div class="nb-pend">${tks.map((t, i) => `<div class="nb-pi ${t.classList.contains('ok') ? 'ok' : ''}" data-i="${i}"><i data-ck></i><span>${esc(t.textContent)}</span><button class="iconbtn" data-ag title="Pasar a la agenda">🔔</button><button class="iconbtn" data-dl title="Quitar">✕</button></div>`).join('') || '<div class="muted" style="padding:8px">Sin pendientes. Escriba abajo y presione Enter.</div>'}</div>
+          <input class="in" id="nbPi" placeholder="+ Agregar pendiente y Enter"><div class="bar" style="margin-top:8px"><button class="btn sm" id="nbPl">🗑 Limpiar hechos</button><span class="sp"></span><span class="muted" style="font-size:11.5px">✔ se guarda solo</span></div>`;
+        const save = async () => { await Store.save('notas', Object.assign({}, n, { html: tks.map(t => t.outerHTML).join('') })); NB.badge(); const tp = $('[data-t="pend"]', r); if (tp) tp.textContent = `☐ Pendientes (${tks.filter(t => !t.classList.contains('ok')).length})`; pintar(); };
+        $$('.nb-pi', B).forEach(row => { const t = tks[num(row.dataset.i)];
+          $('[data-ck]', row).onclick = () => { t.classList.toggle('ok'); save(); };
+          $('[data-dl]', row).onclick = () => { tks.splice(num(row.dataset.i), 1); save(); };
+          $('[data-ag]', row).onclick = () => openForm('agenda', { titulo: t.textContent.slice(0, 120), tipo: 'Recordatorio', fecha: today() }, { onDone: () => toast('Agregado a la agenda ✔', 'ok') }); });
+        $('#nbPi', B).onkeydown = e => { if (e.key === 'Enter' && e.target.value.trim()) { const d2 = document.createElement('div'); d2.className = 'tk'; d2.textContent = e.target.value.trim(); tks.push(d2); save().then(() => $('#nbPi', B).focus()); } };
+        $('#nbPl', B).onclick = () => { for (let i = tks.length - 1; i >= 0; i--) if (tks[i].classList.contains('ok')) tks.splice(i, 1); save(); };
+        setTimeout(() => { const i = $('#nbPi', B); i && i.focus(); }, 20); };
+      pintar();
+    } else {
+      if (NB.st.sel && Store.get('notas', NB.st.sel) && !Store.get('notas', NB.st.sel).esp && NB.st.verNota) { B.innerHTML = '<a href="#" id="nbVb" style="font-size:12.5px">← todas las notas</a><div id="nbVe" style="margin-top:6px"></div>'; $('#nbVb', B).onclick = e => { e.preventDefault(); NB.st.verNota = false; NB.C(r); }; editorNota($('#nbVe', B), NB.st.sel, { onDelete: () => { NB.st.verNota = false; NB.C(r); } }); return; }
+      B.innerHTML = `<div class="bar" style="margin:0 0 6px"><input class="in" id="nbQ" placeholder="🔎 Buscar…" value="${esc(NB.st.q)}" style="flex:1"><button class="btn sm pri" id="nbN">+ Nota</button></div><div class="nb-ls" style="max-height:300px">${otras.map(NB.item).join('') || '<div class="muted" style="padding:8px">Sin notas.</div>'}</div>`;
+      $('#nbQ', B).oninput = debounce(e => { NB.st.q = e.target.value; NB.C(r); setTimeout(() => { const q = $('#nbQ', r); q.focus(); q.setSelectionRange(q.value.length, q.value.length); }, 0); }, 250);
+      $('#nbN', B).onclick = async () => { await NB.nueva(); NB.st.verNota = true; NB.C(r); };
+      $$('.nb-it', B).forEach(d => d.onclick = () => { NB.st.sel = d.dataset.id; NB.st.verNota = true; NB.C(r); });
+    }
+  },
+  /* ---- D · cuaderno ---- */
+  D(r) {
+    const secs = seccionesNotas(), sec = secs.includes(NB.st.sec) ? NB.st.sec : 'General';
+    const todas = Store.all('notas'), ls = NB.lista(n => (n.seccion || 'General') === sec);
+    if (!NB.st.sel || !ls.some(n => n._id === NB.st.sel)) NB.st.sel = ls[0] ? ls[0]._id : null;
+    r.innerHTML = `<div class="nb-dw"><div class="nb-dc1"><div class="nb-h"><b>📓 Secciones</b></div>${secs.map(x => { const c = todas.filter(n => (n.seccion || 'General') === x).length; return `<div class="nb-sec ${x === sec ? 'on' : ''}" data-s="${esc(x)}">${esc(x)}<span class="sp"></span><small>${c}</small></div>`; }).join('')}
+        <div style="display:flex;gap:4px;margin-top:8px"><input class="in" id="nbNs" placeholder="Nueva sección" style="padding:5px 8px;font-size:12.5px"><button class="btn sm" id="nbNsb">+</button></div></div>
+      <div class="nb-dc2"><input class="in" id="nbQ" placeholder="🔎 Buscar en ${esc(sec)}…" value="${esc(NB.st.q)}"><div class="nb-ls">${ls.map(NB.item).join('') || '<div class="muted" style="padding:8px">Sin páginas.</div>'}</div><button class="btn sm pri" id="nbN" style="margin-top:6px">+ Página</button></div>
+      <div class="nb-dc3"><div class="nb-h" style="margin-bottom:6px"><span class="muted" style="font-size:12px">${esc(sec)}</span><span class="sp"></span><button class="iconbtn" id="nbX" title="Cerrar (Esc)">✕</button></div><div id="nbE"></div></div></div>`;
+    $('#nbX', r).onclick = () => NB.cerrar();
+    $$('.nb-sec', r).forEach(d => d.onclick = () => { NB.st.sec = d.dataset.s; NB.st.sel = null; NB.D(r); });
+    $('#nbNsb', r).onclick = async () => { const v = $('#nbNs', r).value.trim(); if (!v || secs.includes(v)) return; CFG.notas.secciones = [...(CFG.notas.secciones || []), v]; await saveCfg(true); NB.st.sec = v; NB.D(r); };
+    $('#nbQ', r).oninput = debounce(e => { NB.st.q = e.target.value; NB.D(r); setTimeout(() => { const q = $('#nbQ', r); q.focus(); q.setSelectionRange(q.value.length, q.value.length); }, 0); }, 250);
+    $('#nbN', r).onclick = async () => { await NB.nueva({ seccion: sec }); NB.D(r); const t = $('.ned-t', r); t && t.focus(); };
+    $$('.nb-it', r).forEach(d => d.onclick = () => { NB.st.sel = d.dataset.id; NB.D(r); });
+    if (NB.st.sel) editorNota($('#nbE', r), NB.st.sel, { full: 1, onChange: n2 => { if ((n2.seccion || 'General') !== sec) NB.D(r); else NB.refLista(r); }, onDelete: () => { NB.st.sel = null; NB.D(r); } });
+    else $('#nbE', r).innerHTML = '<div class="empty">Pulse <b>+ Página</b> para escribir en esta sección.</div>';
+  }
+};
+window.NB = NB;
+
+/* ======================= CALCULADORA (calculadora con cinta · cobro rápido · cuentas en renglones) ======================= */
+/** Evalúa una cuenta escrita: + − × ÷ ( ) y % (25 - 10% = 22.50; 10% de 50 → 50*10%) */
+function calcEval(txt) {
+  const s = String(txt || '').replace(/,/g, '.').replace(/[×xX]/g, '*').replace(/÷/g, '/').replace(/−/g, '-').replace(/\s+/g, '');
+  if (!s) return null; let i = 0;
+  const num_ = () => { const m = s.slice(i).match(/^\d*\.?\d+/); if (!m) throw 0; i += m[0].length; return parseFloat(m[0]); };
+  const factor = () => { let v, sg = 1; while (s[i] === '+' || s[i] === '-') { if (s[i] === '-') sg = -sg; i++; } if (s[i] === '(') { i++; v = expr().v; if (s[i] !== ')') throw 0; i++; } else v = num_(); v *= sg; if (s[i] === '%') { i++; return { v, pct: true }; } return { v }; };
+  const term = () => { let a = factor(), v = a.pct ? a.v / 100 : a.v, first = a; while (s[i] === '*' || s[i] === '/') { const op = s[i++]; const b = factor(); const bv = b.pct ? b.v / 100 : b.v; v = op === '*' ? v * bv : v / bv; first = null; } return first && first.pct ? { v: first.v, pct: true } : { v }; };
+  const expr = () => { let a = term(), v = a.pct ? a.v / 100 : a.v; while (s[i] === '+' || s[i] === '-') { const op = s[i++]; const b = term(); const bv = b.pct ? v * b.v / 100 : b.v; v = op === '+' ? v + bv : v - bv; } return { v }; };
+  try { const r = expr().v; if (i < s.length || !isFinite(r)) return null; return Math.round(r * 1e8) / 1e8; } catch (e) { return null; }
+}
+const fmtN = v => v === null || v === undefined || v === '' ? '' : (Math.round(v * 100) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const CALCU = {
+  st: Object.assign({ tab: 'calc', fija: false, x: null, y: null, bx: null, by: null, min: false, abierta: false, expr: '', tape: [], recA: '', cobro: [], recB: '', lineas: [''], recC: '' }, LS.get('calc', {})),
+  save() { const o = Object.assign({}, CALCU.st); LS.set('calc', o); },
+  el() { let r = $('#calcRoot'); if (!r) { r = document.createElement('div'); r.id = 'calcRoot'; r.tabIndex = -1; document.body.appendChild(r); } return r; },
+  boton() {
+    if ($('#btnCalc')) return;
+    const b = document.createElement('button'); b.id = 'btnCalc'; b.className = 'nbbtn'; b.title = 'Calculadora (Ctrl+Shift+K)'; b.innerHTML = '🧮 <span class="nbl">Calculadora</span>'; b.onclick = () => CALCU.toggle();
+    const nb = $('#btnNotas') || $('#sync'); nb.parentNode.insertBefore(b, nb);
+    document.addEventListener('keydown', e => { if (e.ctrlKey && e.shiftKey && (e.key === 'K' || e.key === 'k')) { e.preventDefault(); CALCU.toggle(); } });
+    document.addEventListener('mousedown', e => { if (CALCU.st.abierta && !CALCU.st.fija && !CALCU.st.min && !e.target.closest('#calcRoot,#btnCalc,#calcBub')) CALCU.cerrar(); });
+    if (CALCU.st.abierta && CALCU.st.fija) CALCU.abrir(); else if (CALCU.st.min) CALCU.burbuja();
+  },
+  toggle() { if (CALCU.st.abierta && !CALCU.st.min) CALCU.cerrar(); else CALCU.abrir(); },
+  cerrar() { CALCU.st.abierta = false; CALCU.st.min = false; CALCU.save(); const r = $('#calcRoot'); if (r) { r.className = ''; r.innerHTML = ''; } const bb = $('#calcBub'); if (bb) bb.remove(); $('#btnCalc') && $('#btnCalc').classList.remove('on'); },
+  abrir() { CALCU.st.abierta = true; CALCU.st.min = false; CALCU.save(); const bb = $('#calcBub'); if (bb) bb.remove(); $('#btnCalc').classList.add('on'); CALCU.pintar(); setTimeout(() => CALCU.foco(), 30); },
+  minimizar() { CALCU.st.min = true; CALCU.st.abierta = true; CALCU.save(); const r = $('#calcRoot'); r.className = ''; r.innerHTML = ''; $('#btnCalc').classList.remove('on'); CALCU.burbuja(); },
+  resultado() { const t = CALCU.st.tab; if (t === 'cobro') return CALCU.totB(); if (t === 'cuentas') return CALCU.totC(); const v = calcEval(CALCU.st.expr); return v === null ? (CALCU.st.tape.length ? CALCU.st.tape[CALCU.st.tape.length - 1].r : 0) : v; },
+  burbuja() {
+    let b = $('#calcBub'); if (!b) { b = document.createElement('div'); b.id = 'calcBub'; b.title = 'Abrir calculadora (arrastre para mover)'; document.body.appendChild(b); }
+    b.innerHTML = `🧮<small>${fmtN(CALCU.resultado())}</small>`;
+    const W = window.innerWidth, H = window.innerHeight; b.style.left = Math.min(W - 70, CALCU.st.bx ?? W - 90) + 'px'; b.style.top = Math.min(H - 90, CALCU.st.by ?? H - 110) + 'px';
+    CALCU.arrastrar(b, b, (x, y) => { CALCU.st.bx = x; CALCU.st.by = y; CALCU.save(); }, () => CALCU.abrir());
+  },
+  arrastrar(el, asa, fin, clic) {
+    asa.onmousedown = e => { if (e.button || e.target.closest('button,input,.calc-tabs span')) return; e.preventDefault(); const r = el.getBoundingClientRect(), ox = e.clientX - r.left, oy = e.clientY - r.top; let mov = false;
+      const mv = ev => { mov = true; const x = Math.max(0, Math.min(window.innerWidth - r.width, ev.clientX - ox)), y = Math.max(0, Math.min(window.innerHeight - 40, ev.clientY - oy)); el.style.left = x + 'px'; el.style.top = y + 'px'; el.style.right = 'auto'; };
+      const up = () => { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); const r2 = el.getBoundingClientRect(); if (mov) fin(r2.left, r2.top); else if (clic) clic(); };
+      document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up); };
+  },
+  foco() { const r = $('#calcRoot'); if (!r) return; const t = CALCU.st.tab; const i = t === 'calc' ? r : t === 'cobro' ? $('[data-q]:last-of-type', r) || r : $$('.calc-ln input', r).pop(); (i || r).focus(); },
+  pintar() {
+    const r = CALCU.el(), st = CALCU.st;
+    r.className = 'calc ' + (st.fija ? 'calc-fija' : 'calc-desp');
+    if (st.fija) { r.style.left = (st.x ?? Math.max(10, window.innerWidth - 600)) + 'px'; r.style.top = (st.y ?? 70) + 'px'; r.style.right = 'auto'; } else { r.style.left = ''; r.style.top = ''; r.style.right = ''; }
+    r.innerHTML = `<div class="calc-h"><span class="calc-tabs">${[['calc', '🧮 Calculadora'], ['cobro', '🧾 Cobro rápido'], ['cuentas', '✍️ Cuentas']].map(([k, l]) => `<span data-ct="${k}" class="${st.tab === k ? 'on' : ''}">${l}</span>`).join('')}</span><span class="sp"></span>
+      <button class="iconbtn ${st.fija ? 'on' : ''}" data-a="pin" title="${st.fija ? 'Volver a desplegable' : 'Fijar como ventana flotante'}">📌</button><button class="iconbtn" data-a="min" title="Minimizar a burbuja">–</button><button class="iconbtn" data-a="x" title="Cerrar (Esc)">✕</button></div><div class="calc-b"></div>`;
+    $$('[data-ct]', r).forEach(t => t.onclick = () => { st.tab = t.dataset.ct; CALCU.save(); CALCU.pintar(); CALCU.foco(); });
+    $('[data-a=pin]', r).onclick = () => { st.fija = !st.fija; if (st.fija && st.x === null) { const rc = r.getBoundingClientRect(); st.x = rc.left; st.y = rc.top; } CALCU.save(); CALCU.pintar(); };
+    $('[data-a=min]', r).onclick = () => CALCU.minimizar();
+    $('[data-a=x]', r).onclick = () => CALCU.cerrar();
+    if (st.fija) CALCU.arrastrar(r, $('.calc-h', r), (x, y) => { st.x = x; st.y = y; CALCU.save(); });
+    r.onkeydown = e => { if (e.key === 'Escape') { e.stopPropagation(); st.fija ? CALCU.minimizar() : CALCU.cerrar(); } };
+    ({ calc: CALCU.tabA, cobro: CALCU.tabB, cuentas: CALCU.tabC }[st.tab])($('.calc-b', r));
+  },
+  /* --- Calculadora con cinta --- */
+  tabA(B) {
+    const st = CALCU.st, sumaT = () => st.tape.reduce((a, x) => a + x.r, 0);
+    const pint = () => {
+      const v = calcEval(st.expr), tot = sumaT(), rec = num(st.recA);
+      B.innerHTML = `<div class="calc-a"><div><div class="calc-disp"><small>${esc(st.expr || ' ')}${v !== null && /[-+*/%]/.test(st.expr) ? ' =' : ''}</small><b>${v === null ? (st.expr ? '…' : '0') : fmtN(v)}</b></div>
+        <div class="calc-keys">${['C', '⌫', '%', '÷', '7', '8', '9', '×', '4', '5', '6', '−', '1', '2', '3', '+', '0', '00', '.', '='].map(k => `<button class="ck ${'C⌫'.includes(k) ? 'f' : '%÷×−+'.includes(k) ? 'o' : k === '=' ? 'e' : ''}" data-k="${k}">${k}</button>`).join('')}</div></div>
+        <div class="calc-tape"><b class="muted" style="font-size:11.5px">CINTA</b><div class="calc-tl">${st.tape.map((x, i) => `<div title="Clic para reutilizar" data-ti="${i}"><span>${esc(x.e)}</span><span>${fmtN(x.r)}</span></div>`).join('') || '<div class="muted" style="border:0">Cada “=” queda aquí</div>'}</div>
+          ${st.tape.length ? `<div class="calc-sum"><span>Suma de la cinta</span><b>${fmtN(tot)}</b></div>` : ''}
+          <div class="calc-sum"><span>Recibido</span><input class="in" data-rec value="${esc(st.recA)}" placeholder="0.00" style="width:80px;text-align:right"></div>
+          <div class="calc-sum ok-t" data-vu style="${rec ? '' : 'visibility:hidden'}"><span>Vuelto</span><b>${fmtN(rec - (st.tape.length ? tot : (v || 0)))}</b></div>
+          <div style="display:grid;gap:5px;margin-top:6px"><button class="btn sm" data-c="copy">📋 Copiar resultado</button><button class="btn sm pri" data-c="recibo" title="Pone el resultado en 'Pago recibido' del recibo abierto">→ Pasar al recibo</button><button class="btn sm" data-c="clr">🧹 Limpiar cinta</button></div></div></div>`;
+      $$('[data-k]', B).forEach(b => b.onclick = () => tecla(b.dataset.k));
+      $$('[data-ti]', B).forEach(d => d.onclick = () => { st.expr = String(st.tape[num(d.dataset.ti)].r); CALCU.save(); pint(); });
+      $('[data-rec]', B).oninput = e => { st.recA = e.target.value; CALCU.save(); const v = $('[data-vu]', B), rc = num(st.recA), base = st.tape.length ? sumaT() : (calcEval(st.expr) || 0); v.style.visibility = rc ? '' : 'hidden'; $('b', v).textContent = fmtN(rc - base); };
+      $('[data-c=copy]', B).onclick = () => { navigator.clipboard && navigator.clipboard.writeText(String(CALCU.resultado().toFixed(2))); toast('Resultado copiado'); };
+      $('[data-c=clr]', B).onclick = () => { st.tape = []; st.expr = ''; st.recA = ''; CALCU.save(); pint(); };
+      $('[data-c=recibo]', B).onclick = () => CALCU.alRecibo(st.tape.length && !st.expr ? sumaT() : CALCU.resultado());
+    };
+    const tecla = k => {
+      if (k === 'C') st.expr = ''; else if (k === '⌫') st.expr = st.expr.slice(0, -1);
+      else if (k === '=') { const v = calcEval(st.expr); if (v === null) return; st.tape.push({ e: st.expr, r: v }); if (st.tape.length > 40) st.tape.shift(); st.expr = String(v); }
+      else { const m = { '×': '*', '÷': '/', '−': '-' }[k] || k; if (st.expr === String((st.tape[st.tape.length - 1] || {}).r) && /[0-9.]/.test(m[0])) st.expr = ''; st.expr += m; }
+      CALCU.save(); pint();
+    };
+    $('#calcRoot').onkeydown = e => { if (CALCU.st.tab !== 'calc' || e.target.matches('input')) { if (e.key === 'Escape') { CALCU.st.fija ? CALCU.minimizar() : CALCU.cerrar(); } return; }
+      const k = e.key; if (/^[0-9.]$/.test(k)) tecla(k); else if (k === '+' || k === '-') tecla(k === '-' ? '−' : '+'); else if (k === '*') tecla('×'); else if (k === '/') { e.preventDefault(); tecla('÷'); } else if (k === '%') tecla('%');
+      else if (k === 'Enter' || k === '=') { e.preventDefault(); tecla('='); } else if (k === 'Backspace') tecla('⌫'); else if (k === 'Delete') tecla('C'); else if (k === 'Escape') { CALCU.st.fija ? CALCU.minimizar() : CALCU.cerrar(); } else return; e.preventDefault(); };
+    pint();
+  },
+  alRecibo(v) {
+    const p = $('#r_pago'); if (!p) { toast('Abra un recibo para pasarle el monto (Ingresos › Recibos › + Nuevo)', 'bad', 5000); return; }
+    p.value = (Math.round(v * 100) / 100).toFixed(2); p.dispatchEvent(new Event('input', { bubbles: true })); p.dispatchEvent(new Event('change', { bubbles: true })); toast('Monto pasado al recibo: ' + money(v), 'ok');
+  },
+  /* --- Cobro rápido --- */
+  totB() { return r2(CALCU.st.cobro.reduce((a, l) => a + num(l.q) * num(l.p), 0)); },
+  tabB(B) {
+    const st = CALCU.st;
+    const rapidos = () => { const vis = rubrosVisibles().filter(x => num(x.p)); const fr = new Set(rubrosFrecuentes().map(x => x.k)); return vis.sort((a, b) => (fr.has(b.k) - fr.has(a.k))); };
+    const pint = () => {
+      const tot = CALCU.totB(), rec = num(st.recB);
+      B.innerHTML = `<div class="calc-chips"><span class="muted" style="font-size:12px">Agregar:</span>${rapidos().map(x => `<button class="chip" data-add="${x.k}">+ ${esc(x.l)} ${money(x.p)}</button>`).join('')}<button class="chip" data-add="">+ Otro…</button></div>
+        <table class="t calc-tb"><thead><tr><th>Concepto</th><th style="width:66px">Cant.</th><th style="width:84px">Precio</th><th class="r" style="width:84px">Subtotal</th><th style="width:26px"></th></tr></thead><tbody>
+        ${st.cobro.map((l, i) => `<tr data-i="${i}"><td>${l.k ? esc(l.l) : `<input class="in" data-f="l" value="${esc(l.l)}" placeholder="Concepto" style="width:100%">`}</td><td><input class="in" type="number" min="0" step="any" data-f="q" data-q value="${esc(l.q)}"></td><td><input class="in" type="number" step="any" data-f="p" value="${esc(l.p)}"></td><td class="num">${fmtN(num(l.q) * num(l.p))}</td><td><button class="iconbtn" data-del>✕</button></td></tr>`).join('') || '<tr><td colspan="5" class="muted">Toque un concepto de arriba para empezar.</td></tr>'}</tbody></table>
+        <div class="calc-sum big"><span>TOTAL</span><b>${money(tot)}</b></div>
+        <div class="calc-sum"><span>Recibido <input class="in" data-rec value="${esc(st.recB)}" placeholder="0.00" style="width:90px;text-align:right;margin-left:6px"></span><span class="ok-t" data-vu style="${rec ? '' : 'visibility:hidden'}">Vuelto <b style="font-size:20px">${money(rec - tot)}</b></span></div>
+        <div class="bar" style="margin:8px 0 0"><button class="btn sm" data-c="new">🧹 Nuevo cobro</button><button class="btn sm" data-c="copy">📋 Copiar</button><span class="sp"></span><button class="btn sm pri" data-c="rec" ${st.cobro.some(l => l.k) ? '' : 'disabled'}>🧾 Crear recibo con esto</button></div>`;
+      const vuelto = () => { const v = $('[data-vu]', B), rc = num(st.recB); v.style.visibility = rc ? '' : 'hidden'; $('b', v).textContent = money(rc - CALCU.totB()); };
+      $$('[data-add]', B).forEach(b => b.onmousedown = e => { e.preventDefault(); const a = document.activeElement; if (a && a.blur) a.blur(); }); $$('[data-add]', B).forEach(b => b.onclick = () => { const k = b.dataset.add, rb = CFG.rubros.find(x => x.k === k); const ex = k && st.cobro.find(l => l.k === k); if (ex) ex.q = num(ex.q) + 1; else st.cobro.push(rb ? { k, l: rb.l, q: 1, p: num(rb.p) } : { k: '', l: '', q: 1, p: '' }); CALCU.save(); pint(); const rows = $$('[data-i]', B); const row = k ? rows[st.cobro.indexOf(st.cobro.find(l => l.k === k))] : rows[rows.length - 1]; const inp = row && $(k ? '[data-f=q]' : '[data-f=l]', row); if (inp) { inp.focus(); inp.select && inp.select(); } });
+      $$('[data-i]', B).forEach(tr => { const l = st.cobro[num(tr.dataset.i)];
+        $$('[data-f]', tr).forEach(i => i.oninput = () => { l[i.dataset.f] = i.value; CALCU.save(); $('td.num', tr).textContent = fmtN(num(l.q) * num(l.p)); $('.calc-sum.big b', B).textContent = money(CALCU.totB()); vuelto(); const rb = $('[data-c=rec]', B); });
+        $('[data-del]', tr).onclick = () => { st.cobro.splice(num(tr.dataset.i), 1); CALCU.save(); pint(); }; });
+      $('[data-rec]', B).oninput = e => { st.recB = e.target.value; CALCU.save(); vuelto(); };
+      $('[data-c=new]', B).onclick = () => { st.cobro = []; st.recB = ''; CALCU.save(); pint(); };
+      $('[data-c=copy]', B).onclick = () => { const t = st.cobro.map(l => `${l.l || 'Otro'}: ${num(l.q)} × ${money(l.p)} = ${money(num(l.q) * num(l.p))}`).join('\n') + `\nTOTAL: ${money(CALCU.totB())}`; navigator.clipboard && navigator.clipboard.writeText(t); toast('Cobro copiado'); };
+      $('[data-c=rec]', B).onclick = () => {
+        const pre = {}; let otros = [];
+        st.cobro.forEach(l => { const rb = l.k && CFG.rubros.find(x => x.k === l.k); if (rb) { pre['r_' + rb.k] = r2((num(pre['r_' + rb.k]) || 0) + num(l.q) * num(l.p)); if (rb.meses) pre.meses_alim = r2((num(pre.meses_alim) || 0) + num(l.q)); } else if (num(l.q) * num(l.p)) otros.push(`${l.l || 'Otro'} ${money(num(l.q) * num(l.p))}`); });
+        if (otros.length) pre.obs = 'Otros cobros (no incluidos en rubros): ' + otros.join(', ');
+        if (!st.fija) CALCU.minimizar(); openRecibo(null, () => { if (curRefresh) curRefresh(); }, pre);
+        if (otros.length) toast('Los conceptos sin rubro quedaron anotados en Observaciones', '', 5000);
+      };
+    };
+    pint();
+  },
+  /* --- Cuentas en renglones --- */
+  totC() { return r2(CALCU.st.lineas.reduce((a, t) => a + (calcEval(String(t).replace(/^[^:]*:/, '')) || 0), 0)); },
+  tabC(B) {
+    const st = CALCU.st; if (!st.lineas.length) st.lineas = [''];
+    const pint = (foco) => {
+      const tot = CALCU.totC(), rec = num(st.recC);
+      B.innerHTML = `<div class="calc-lns">${st.lineas.map((t, i) => { const v = calcEval(String(t).replace(/^[^:]*:/, '')); return `<div class="calc-ln"><input class="in" data-i="${i}" value="${esc(t)}" placeholder="${i ? 'otra cuenta…' : 'ej. fichas: 3*5   ·   25 - 10%'}"><b class="${v === null && t.trim() ? 'bad-t' : ''}">${t.trim() ? (v === null ? '¿?' : fmtN(v)) : ''}</b></div>`; }).join('')}</div>
+        <div class="calc-sum big"><span>SUMA DE RENGLONES</span><b>${money(tot)}</b></div>
+        <div class="calc-sum"><span>Recibido <input class="in" data-rec value="${esc(st.recC)}" placeholder="0.00" style="width:90px;text-align:right;margin-left:6px"></span><span class="ok-t" data-vu style="${rec ? '' : 'visibility:hidden'}">Vuelto <b style="font-size:20px">${money(rec - tot)}</b></span></div>
+        <div class="bar" style="margin:8px 0 0"><button class="btn sm" data-c="clr">🧹 Limpiar</button><button class="btn sm" data-c="copy">📋 Copiar total</button><button class="btn sm" data-c="print">🖨️ Imprimir cuenta</button><span class="sp"></span><span class="muted" style="font-size:11px">Enter = nuevo renglón</span></div>`;
+      const vueltoC = () => { const v = $('[data-vu]', B), rc = num(st.recC); v.style.visibility = rc ? '' : 'hidden'; $('b', v).textContent = money(rc - CALCU.totC()); };
+      $$('[data-i]', B).forEach(i => {
+        i.oninput = () => { st.lineas[num(i.dataset.i)] = i.value; CALCU.save(); const v = calcEval(i.value.replace(/^[^:]*:/, '')); const b = i.nextElementSibling; b.textContent = i.value.trim() ? (v === null ? '¿?' : fmtN(v)) : ''; b.className = v === null && i.value.trim() ? 'bad-t' : ''; $('.calc-sum.big b', B).textContent = money(CALCU.totC()); vueltoC(); };
+        i.onkeydown = e => { const n = num(i.dataset.i);
+          if (e.key === 'Enter') { e.preventDefault(); st.lineas.splice(n + 1, 0, ''); CALCU.save(); pint(n + 1); }
+          else if (e.key === 'Backspace' && !i.value && st.lineas.length > 1) { e.preventDefault(); st.lineas.splice(n, 1); CALCU.save(); pint(Math.max(0, n - 1)); }
+          else if (e.key === 'ArrowDown') { const x = $(`[data-i="${n + 1}"]`, B); x && x.focus(); } else if (e.key === 'ArrowUp') { const x = $(`[data-i="${n - 1}"]`, B); x && x.focus(); } };
+      });
+      $('[data-rec]', B).oninput = e => { st.recC = e.target.value; CALCU.save(); vueltoC(); };
+      $('[data-c=clr]', B).onclick = () => { st.lineas = ['']; st.recC = ''; CALCU.save(); pint(0); };
+      $('[data-c=copy]', B).onclick = () => { navigator.clipboard && navigator.clipboard.writeText(CALCU.totC().toFixed(2)); toast('Total copiado'); };
+      $('[data-c=print]', B).onclick = () => { const ls = st.lineas.filter(t => t.trim()); Print.show('Cuenta', `<div class="page">${membrete()}<div class="ptitle">CUENTA</div><div class="psub">${flong(today())} · ${new Date().toTimeString().slice(0, 5)}</div>${ptable(['Detalle', 'Monto'], ls.map(t => { const m = String(t).match(/^([^:]*):(.*)$/); const v = calcEval(m ? m[2] : t); return `<tr><td>${esc(m ? m[1].trim() + ' (' + m[2].trim() + ')' : t)}</td><td class="r">${money(v || 0)}</td></tr>`; }).concat([`<tr class="tot"><td>TOTAL</td><td class="r">${money(CALCU.totC())}</td></tr>`].concat(num(st.recC) ? [`<tr><td>Recibido</td><td class="r">${money(st.recC)}</td></tr>`, `<tr class="tot"><td>Vuelto</td><td class="r">${money(num(st.recC) - CALCU.totC())}</td></tr>`] : [])))}</div>`); };
+      if (foco !== undefined) { const x = $(`[data-i="${foco}"]`, B); if (x) { x.focus(); x.setSelectionRange(x.value.length, x.value.length); } }
+    };
+    pint(st.lineas.length - 1);
+  }
+};
+window.CALCU = CALCU;
+
+window.__OK = (window.__OK || []).concat('AppHome');
+</script>

@@ -1,0 +1,7 @@
+{
+  "nombre": "Sistema de Suministros",
+  "nombre_corto": "Suministros",
+  "apiUrl": "",
+  "color": "#1f3864",
+  "_nota": "apiUrl = URL /exec de la implementación de Apps Script. NO es secreta. NUNCA ponga aquí la clave de acceso."
+}

@@ -1,0 +1,696 @@
+<script>
+/* =================================================================
+   CONFIGURACIÓN · IMPORTAR / EXPORTAR · CONEXIÓN · ARRANQUE
+   ================================================================= */
+let INFO = {}; // datos del servidor (token, carpeta, url…)
+
+function cfgTabs(el, act) {
+  const t = [['cfg:gen', 'General'], ['cfg:firmas', 'Firmantes'], ['cfg:listas', 'Catálogos'], ['cfg:catalogo', 'Catálogo de cobros y productos'], ['cfg:mods', 'Módulos y campos'], ['cfg:anios', 'Años'], ['cfg:import', 'Importar / exportar'], ['cfg:sync', 'Conexión']];
+  return `<div class="tabs">${t.map(([v, l]) => `<button data-tab="${v}" class="${v === act ? 'act' : ''}">${l}</button>`).join('')}</div>`;
+}
+function bindTabs(el) { $$('[data-tab]', el).forEach(b => b.onclick = () => go(b.dataset.tab)); }
+const path = (o, p) => p.split('.').reduce((a, k) => a && a[k], o);
+const setPath = (o, p, v) => { const ks = p.split('.'); const last = ks.pop(); ks.reduce((a, k) => a[k] = a[k] || {}, o)[last] = v; };
+
+/* ---------- GENERAL ---------- */
+defView('cfg:gen', 'Configuración general', el => {
+  const F = (p, l, t = 'text', extra = '') => { const v = path(CFG, p); return t === 'check' ? `<label class="chk"><input type="checkbox" data-p="${p}" ${v ? 'checked' : ''}> ${l}</label>` : `<label class="f ${extra}"><span>${l}</span><input class="in" type="${t}" ${t === 'number' ? 'step="any"' : ''} data-p="${p}" value="${esc(v ?? '')}"></label>`; };
+  el.innerHTML = cfgTabs(el, 'cfg:gen') + `
+  <div class="card"><h3>Institución (aparece en todos los impresos)</h3><div class="form">
+    ${F('inst.nombre', 'Nombre de la institución', 'text', 'wide')}${F('inst.organismo', 'Organismo')}${F('inst.area', 'Área / dependencia interna')}${F('inst.dependencia', 'Dependencia')}
+    ${F('inst.direccion', 'Dirección', 'text', 'wide')}${F('inst.telefono', 'Teléfono')}${F('inst.codigo', 'Código de infraestructura')}${F('inst.municipio', 'Municipio')}${F('inst.departamento', 'Departamento')}${F('inst.distrito', 'Distrito')}${F('inst.lugar', 'Lugar (ciudad para fechas)')}${F('inst.nit', 'NIT del CDE')}
+    <label class="f"><span>Logo (PNG/JPG)</span><input class="in" type="file" accept="image/*" id="gLogo"></label><div style="align-self:end">${CFG.inst.logo ? `<img src="${CFG.inst.logo}" style="height:48px;vertical-align:middle"> <button class="btn sm" id="gLogoX">Quitar</button>` : '<span class="muted">Sin logo</span>'}</div></div></div>
+  <div class="card"><h3>Firmantes</h3><p class="muted" style="margin:0">${firmantes().filter(f => f.nombre).map(f => `<b>${esc(f.nombre)}</b> · ${esc(f.cargo)}`).join('<br>') || 'Sin firmantes'}</p><div class="bar" style="margin-top:8px"><button class="btn" data-tab="cfg:firmas">✍️ Agregar, quitar o elegir firmantes por documento</button></div></div>
+  <div class="grid g2"><div class="card"><h3>Caja chica</h3><div class="form">${F('caja.fondo', 'Monto del fondo $', 'number')}${F('caja.limite', 'Límite por compra $', 'number')}${F('caja.alertaPct', 'Alertar reembolso cuando el saldo sea ≤ (0.20 = 20%)', 'number')}${F('caja.prefijo', 'Prefijo de recibos (RC → RC261001)')}</div></div>
+  <div class="card"><h3>Recibos, alimentos y cuadre</h3><div class="form"><div class="sec-t">Series de recibos</div><label class="f"><span>Serie de recibos predeterminada</span><select class="in" data-p="serieDef">${lista('series').map(x => `<option ${x === CFG.serieDef ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></label><label class="f"><span>Rangos por serie (una por línea, ej. A: 1-27)</span><textarea class="in" id="gSR" rows="2">${esc((CFG.seriesRangos || []).map(x => `${x.s}: ${x.d}-${x.h}`).join('\n'))}</textarea></label><div style="align-self:end"><button class="btn sm" id="gSRa" type="button">Aplicar series a los recibos</button></div><div class="sec-t">Alimentos</div>${F('alimentos.cuota', 'Cuota mensual de alimentos $', 'number')}<div class="wide"><span class="muted" style="font-size:12.5px;font-weight:600">Meses en que se cobran alimentos <span id="gMc">(${mesesCobro().length})</span></span><div class="chips" id="gMeses" style="margin-top:4px">${MESES.map((m, i) => `<label class="chip ${mesesCobro().includes(i + 1) ? 'on' : ''}"><input type="checkbox" value="${i + 1}" ${mesesCobro().includes(i + 1) ? 'checked' : ''} style="display:none">${cap(m).slice(0, 3)}</label>`).join('')}</div></div>
+    <label class="f wide"><span>Pendientes de alimentos en constancias y reportes</span><select class="in" data-p="alimentos.modo"><option value="anual" ${(CFG.alimentos.modo || 'anual') === 'anual' ? 'selected' : ''}>Comparar con todo el año (todos los meses marcados)</option><option value="fecha" ${CFG.alimentos.modo === 'fecha' ? 'selected' : ''}>Comparar solo con los meses que ya pasaron</option></select></label><div class="sec-t">Cuadre de caja</div><div class="wide">${F('cuadre.incluirDonaciones', 'Sumar también el módulo Donaciones al cuadre (solo si las donaciones NO se registran con recibo)', 'check')}</div></div></div></div>
+  <div class="grid g2"><div class="card"><h3>Apariencia</h3><div class="form"><label class="f"><span>Color principal</span><input type="color" class="in" data-p="tema.pri" value="${CFG.tema.pri}" style="height:38px"></label><label class="f"><span>Color de acento</span><input type="color" class="in" data-p="tema.acc" value="${CFG.tema.acc}" style="height:38px"></label></div></div>
+  <div class="card"><h3>📒 Libreta de notas</h3><p class="muted" style="margin-top:0;font-size:12.5px">Botón de la barra superior (atajo Ctrl+Shift+N). Las notas son las mismas en los tres modos: al cambiar de modo solo cambia cómo se ven.</p>
+    <label class="f"><span>Modo</span><select class="in" data-p="notas.modo">${[['A', 'A · Libreta lateral: lista + editor en un panel a la derecha'], ['C', 'C · Bloc rápido: borrador y pendientes en una ventanita'], ['D', 'D · Cuaderno: secciones, páginas y formato en ventana amplia']].map(([v, l]) => `<option value="${v}" ${(CFG.notas.modo || 'A') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+    <label class="f" style="margin-top:8px"><span>Secciones (una por línea) · se usan en el cuaderno y como filtros</span><textarea class="in" rows="4" id="gNs">${esc((CFG.notas.secciones || []).join('\n'))}</textarea></label></div>
+  <div class="card"><h3>Notificaciones</h3>${F('notif.sonido', 'Sonido al avisar una actividad', 'check')}${F('notif.escritorio', 'Notificaciones de escritorio (si el navegador lo permite)', 'check')}
+    <div class="form" style="margin-top:8px">${F('notif.correo', 'Correo para recordatorios (vacío = su cuenta)', 'email', 'wide')}</div>
+    <div class="bar" style="margin-top:8px"><button class="btn" id="gNP">Probar notificación</button><button class="btn" id="gTr">✉️ Recordatorios por correo…</button></div></div></div>
+  <div class="bar"><span class="sp"></span><button class="btn pri" id="gS">💾 Guardar configuración</button></div>`;
+  bindTabs(el);
+  const leer = () => { $$('[data-p]', el).forEach(i => { let v = i.type === 'checkbox' ? i.checked : i.value; if (i.type === 'number') v = num(v); setPath(CFG, i.dataset.p, v); });
+    const gm = $$('#gMeses input', el); if (gm.length) { CFG.alimentos.mesesCobro = gm.filter(i => i.checked).map(i => num(i.value)); CFG.alimentos.meses = CFG.alimentos.mesesCobro.length; CFG.alimentos.mesInicio = CFG.alimentos.mesesCobro[0] || 1; }
+    const gns = $('#gNs', el); if (gns) CFG.notas.secciones = gns.value.split('\n').map(x => x.trim()).filter(Boolean); if (window.NB) NB.badge();
+    const sr = $('#gSR', el); if (sr) CFG.seriesRangos = sr.value.split('\n').map(l => l.match(/^\s*([^:]+?)\s*:\s*(\d+)\s*-\s*(\d+)/)).filter(Boolean).map(m => ({ s: m[1].trim().toUpperCase(), d: num(m[2]), h: num(m[3]) })); };
+  $$('#gMeses input', el).forEach(i => i.onchange = () => { i.parentElement.classList.toggle('on', i.checked); $('#gMc', el).textContent = `(${$$('#gMeses input:checked', el).length})`; });
+  const sra = $('#gSRa', el); if (sra) sra.onclick = async () => { leer(); const desc = (CFG.seriesRangos || []).map(x => `Serie ${x.s}: del ${x.d} al ${x.h}`).join('<br>'); if (!(await confirmBox(`Se revisarán todos los recibos del año ${Store.year}:<br>${desc}<br>Resto: Serie ${CFG.serieDef}.<br><br>¿Aplicar?`, 'Aplicar'))) return; CFG.seriesRangos.forEach(x => { if (!lista('series').includes(x.s)) CFG.listas.series.push(x.s); }); await saveCfg(true); const n = await asignarSeries(true); toast(n ? `✔ Serie actualizada en ${n} recibo(s)` : 'Todos los recibos ya tenían la serie correcta', 'ok', 5000); };
+  $('#gS', el).onclick = async () => { leer(); await saveCfg(); go('cfg:gen'); };
+  $('#gLogo', el).onchange = e => { const f = e.target.files[0]; if (!f) return; const rd = new FileReader(); rd.onload = () => { const img = new Image(); img.onload = async () => { const c = document.createElement('canvas'); const h = 140, w = Math.round(img.width * h / img.height); c.width = w; c.height = h; c.getContext('2d').drawImage(img, 0, 0, w, h); leer(); CFG.inst.logo = c.toDataURL('image/png'); await saveCfg(); go('cfg:gen'); }; img.src = rd.result; }; rd.readAsDataURL(f); };
+  const lx = $('#gLogoX', el); if (lx) lx.onclick = async () => { leer(); CFG.inst.logo = ''; await saveCfg(); go('cfg:gen'); };
+  $('#gNP', el).onclick = () => { Notif.ask(); Notif.fire({ titulo: 'Prueba de notificación', hora: new Date().toTimeString().slice(0, 5), _id: 'test' }, today(), 'test|' + Date.now()); };
+  $('#gTr', el).onclick = () => triggersModal();
+});
+function triggersModal() {
+  if (Sync.mode === 'local') return toast('Requiere conexión con Google (Configuración › Conexión)', 'bad');
+  const st = INFO.triggers || {};
+  modal('Recordatorios por correo', `<p class="muted">El servidor de Google revisa su agenda y le envía correos aunque tenga la computadora apagada.</p>
+    <label class="chk"><input type="checkbox" id="trE" ${st.email ? 'checked' : ''}> Enviar correo cuando llegue la hora de aviso de cada actividad (revisa cada 15 min)</label>
+    <label class="chk" style="margin-top:8px"><input type="checkbox" id="trD" ${st.digest ? 'checked' : ''}> Resumen diario de la agenda a las 6:00 a. m.</label>
+    <p class="muted" style="font-size:12px;margin-top:10px">También se activa un respaldo automático de sus archivos cada viernes a las 5:00 p. m.</p>`,
+    [{ l: 'Cancelar' }, { l: 'Guardar', pri: 1, fn: async () => { try { INFO.triggers = await Sync.call({ action: 'triggers', email: $('#trE').checked, digest: $('#trD').checked }); toast('Recordatorios actualizados ✔', 'ok'); } catch (e) { toast('No se pudo: ' + (e.error || e), 'bad'); } } }], { sm: true });
+}
+
+/* ---------- FIRMANTES ---------- */
+defView('cfg:firmas', 'Firmantes', el => {
+  let fs = JSON.parse(JSON.stringify(firmantes()));
+  let fd = JSON.parse(JSON.stringify(CFG.firmasDoc || {}));
+  DOCS_FIRMA.forEach(([k, , def]) => { if (!fd[k]) fd[k] = def.slice(); });
+  const draw = () => {
+    const opts = sel => `<option value="">—</option>${fs.map(f => `<option value="${f.k}" ${f.k === sel ? 'selected' : ''}>${esc(f.nombre || '(sin nombre)')} · ${esc(f.cargo)}</option>`).join('')}`;
+    el.innerHTML = cfgTabs(el, 'cfg:firmas') + `<div class="alert info">Agregue o quite las personas que firman. Luego elija, para cada documento, quiénes firman y en qué orden (de izquierda a derecha). El nombre y el cargo se imprimen tal como los escriba aquí.</div>
+    <div class="card"><h3>Firmantes</h3><div class="tw" style="max-height:none"><table class="t"><thead><tr><th>Nombre (como se imprime)</th><th>Cargo (como se imprime)</th><th>Clave para plantillas</th><th></th></tr></thead><tbody>
+      ${fs.map((f, i) => `<tr data-i="${i}"><td><input class="in" data-k="nombre" value="${esc(f.nombre)}" placeholder="(escriba el nombre)"></td><td><input class="in" data-k="cargo" value="${esc(f.cargo)}"></td><td class="muted">{{${esc(f.k)}}}</td><td><button class="btn sm danger" data-del title="Quitar firmante">🗑️</button></td></tr>`).join('')}</tbody></table></div>
+      <div class="bar" style="margin-top:10px"><button class="btn" id="fA">+ Agregar firmante</button></div></div>
+    <div class="card"><h3>Quién firma cada documento</h3><div class="tw" style="max-height:none"><table class="t"><thead><tr><th>Documento</th><th>Firma 1</th><th>Firma 2</th><th>Firma 3</th><th>Firma 4</th></tr></thead><tbody>
+      ${DOCS_FIRMA.map(([k, l]) => `<tr data-doc="${k}"><td><b>${esc(l)}</b></td>${[0, 1, 2, 3].map(j => `<td><select class="in" data-j="${j}" style="min-width:150px">${opts((fd[k] || [])[j] || '')}</select></td>`).join('')}</tr>`).join('')}</tbody></table></div>
+      <p class="muted" style="font-size:12px">Los formatos oficiales de compra (cotización, orden y acta) mantienen su diseño y toman el nombre del Presidente y del Concejal encargado de compras.</p></div>
+    <div class="card"><h3>Vista previa</h3><select class="in" id="fPv" style="width:auto">${DOCS_FIRMA.map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join('')}</select><div id="fPvOut" style="background:#fff;color:#000;padding:10px 20px 20px;border-radius:8px;margin-top:10px;font-family:Arial"></div></div>
+    <div class="bar"><span class="sp"></span><button class="btn pri" id="fS">💾 Guardar firmantes</button></div>`;
+    bindTabs(el);
+    const leer = () => { $$('tr[data-i]', el).forEach(tr => { const f = fs[tr.dataset.i]; $$('[data-k]', tr).forEach(i => f[i.dataset.k] = i.value.trim()); }); $$('tr[data-doc]', el).forEach(tr => { fd[tr.dataset.doc] = $$('[data-j]', tr).map(s => s.value).filter(Boolean); }); };
+    const pv = () => { leer(); const prev = { f: CFG.firmantes, d: CFG.firmasDoc }; CFG.firmantes = fs; CFG.firmasDoc = fd; const k = $('#fPv', el).value; $('#fPvOut', el).innerHTML = firmasDoc(k, k === 'constancia' ? [['', 'Sello']] : k === 'voucher' ? [['(beneficiario)', 'Recibí conforme']] : null) || '<p class="muted">Sin firmas para este documento.</p>'; CFG.firmantes = prev.f; CFG.firmasDoc = prev.d; };
+    el.addEventListener('change', pv); $('#fPv', el).onchange = pv; pv();
+    $$('[data-del]', el).forEach(b => b.onclick = async () => { leer(); const i = Number(b.closest('tr').dataset.i), f = fs[i]; const usos = DOCS_FIRMA.filter(([k]) => (fd[k] || []).includes(f.k)).map(d => d[1]); if (!(await confirmBox(`¿Quitar a <b>${esc(f.nombre || f.cargo)}</b>?${usos.length ? '<br>Se quitará de: ' + esc(usos.join(', ')) : ''}`, 'Quitar'))) return; fs.splice(i, 1); for (const k in fd) fd[k] = fd[k].filter(x => x !== f.k); draw(); });
+    $('#fA', el).onclick = () => { leer(); modal('Agregar firmante', `<div class="form"><label class="f wide"><span>Nombre (como se imprime)</span><input class="in" id="nfN" placeholder="Ej.: Licda. Nombre Apellido"></label><label class="f wide"><span>Cargo (como se imprime)</span><input class="in" id="nfC" placeholder="Ej.: Concejal Representante de los Maestros"></label></div>`,
+      [{ l: 'Cancelar' }, { l: '+ Agregar', pri: 1, fn: () => { const nombre = $('#nfN').value.trim(), cargo = $('#nfC').value.trim(); if (!nombre && !cargo) { toast('Escriba nombre y cargo', 'bad'); return false; } let k = norm(cargo || nombre).replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 24) || 'firmante'; while (fs.some(f => f.k === k)) k += '_2'; fs.push({ k, nombre, cargo }); setTimeout(draw, 20); } }], { sm: true }); };
+    $('#fS', el).onclick = async () => { leer(); CFG.firmantes = fs; CFG.firmasDoc = fd; syncFirmas(); await saveCfg(); draw(); };
+  };
+  draw();
+});
+
+/* ---------- CATÁLOGOS ---------- */
+const LISTAS_NOM = { series: 'Series de recibos', unidades_rubro: 'Unidades de los rubros', arr_categorias: 'Categorías de arrendatarios', secciones: 'Secciones', opciones: 'Opciones de bachillerato', estados_est: 'Estados del estudiante', pagador: 'Tipos de pagador', cc_categorias: 'Caja chica · categorías', cc_tipos: 'Caja chica · tipos', cc_comprobantes: 'Caja chica · comprobantes', unidades: 'Unidades de medida', agenda_tipos: 'Agenda · tipos de actividad', prioridades: 'Agenda · prioridades', bod_categorias: 'Bodega · categorías', bod_tipos: 'Bodega · tipos de movimiento', personal_estados: 'Personal · estados', unif_niveles: 'Uniformes · niveles', tallas: 'Tallas', compra_estados: 'Compras · estados', fondos: 'Compras · fuente de fondos', doc_categorias: 'Documentos · categorías', sexo: 'Sexo' };
+defView('cfg:listas', 'Catálogos y listas', el => {
+  el.innerHTML = cfgTabs(el, 'cfg:listas') + `<div class="alert info">Una opción por línea. Estas listas alimentan los menús desplegables de todo el sistema. ⚠ No cambie "Bodega · tipos de movimiento" ni "Caja chica · tipos" salvo que agregue opciones nuevas: los cálculos usan las palabras ENTRADA, SALIDA, PRÉSTAMO, INICIO y REPOSICIÓN.</div>
+    <div class="card"><h3>Grados (GRADO | NIVEL | CICLO) · en orden</h3><textarea class="in" id="lG" rows="10">${CFG.grados.map(g => `${g.g} | ${g.nivel} | ${g.ciclo}`).join('\n')}</textarea></div>
+    <div class="grid g3">${Object.keys(LISTAS_NOM).filter(k => CFG.listas[k]).map(k => `<div class="card"><h3>${LISTAS_NOM[k]}</h3><textarea class="in" data-l="${k}" rows="7">${esc(CFG.listas[k].join('\n'))}</textarea></div>`).join('')}</div>
+    <div class="bar"><span class="sp"></span><button class="btn pri" id="lS">💾 Guardar catálogos</button></div>`;
+  bindTabs(el);
+  $('#lS', el).onclick = async () => {
+    $$('[data-l]', el).forEach(t => CFG.listas[t.dataset.l] = t.value.split('\n').map(s => s.trim()).filter(Boolean));
+    CFG.grados = $('#lG', el).value.split('\n').map(l => l.split('|').map(s => s.trim())).filter(x => x[0]).map(([g, nivel, ciclo]) => ({ g, nivel: (nivel || '').toUpperCase(), ciclo: (ciclo || nivel || '').toUpperCase() }));
+    await saveCfg();
+  };
+});
+
+/* ---------- RUBROS ---------- */
+defView('cfg:rubros', 'Rubros y precios', el => {
+  let rbs = CFG.rubros.map(r => Object.assign({}, r));
+  const draw = () => {
+    el.innerHTML = cfgTabs(el, 'cfg:rubros') + `<div class="alert info">Los rubros son las columnas de cobro de los recibos (carnet, alimentos, uniformes…). El precio se usa en el formulario rápido (cantidad × precio). Marque <b>meses</b> en el rubro que se cobra por mes (alimentos). <b>⭐ Frecuente</b> = aparece siempre arriba en el recibo; los demás quedan en <i>Más rubros</i>. <b>Visible en recibo</b> desmarcado = no aparece al digitar, pero <b>sus montos siguen contando</b> en cuadres, arqueos y reportes; 🗑️ lo elimina de la lista (los montos ya guardados se conservan en Drive). Las unidades se administran en Catálogos › Unidades de los rubros.</div>
+    <div class="tw" style="max-height:none"><table class="t"><thead><tr><th>Orden</th><th>Nombre</th><th>Precio $</th><th>Unidad</th><th>¿Por meses?</th><th title="Se paga en banco: no entra al efectivo del cuadre">¿Pago en banco?</th><th title="Se muestra arriba en el recibo">⭐ Frecuente</th><th title="Desmarcado = no aparece al digitar recibos. Los montos ya registrados siguen contando en cuadres y reportes.">Visible en recibo</th><th title="Al importar: recibos sin desglose cuyo concepto contenga estas palabras se asignan a este rubro">Palabras clave</th><th>Clave interna</th></tr></thead><tbody>
+    ${rbs.map((r, i) => `<tr data-i="${i}"><td class="act"><button class="btn sm" data-up>▲</button><button class="btn sm" data-dn>▼</button></td><td><input class="in" data-k="l" value="${esc(r.l)}"></td><td><input class="in" type="number" step="any" data-k="p" value="${r.p || ''}" style="width:90px"></td><td><select class="in" data-k="u" style="width:105px">${[...new Set([...lista('unidades_rubro'), r.u || ''])].filter(Boolean).map(u => `<option ${u === r.u ? 'selected' : ''}>${esc(u)}</option>`).join('')}</select></td><td class="c"><input type="checkbox" data-k="meses" ${r.meses ? 'checked' : ''}></td><td class="c"><input type="checkbox" data-k="banco" ${r.banco ? 'checked' : ''}></td><td class="c"><input type="checkbox" data-k="fav" ${r.fav ? 'checked' : ''}></td><td class="c"><input type="checkbox" data-k="on" ${r.off ? '' : 'checked'}></td><td><input class="in" data-k="kw" value="${esc(r.kw || '')}" style="width:130px"></td><td class="muted">r_${esc(r.k)}</td><td><button class="btn sm danger" data-del title="Eliminar rubro">🗑️</button></td></tr>`).join('')}</tbody></table></div>
+    <div class="bar" style="margin-top:12px"><button class="btn" id="rA">+ Agregar rubro</button><span class="sp"></span><button class="btn pri" id="rS">💾 Guardar rubros</button></div>`;
+    bindTabs(el);
+    $$('tr[data-i]', el).forEach(tr => {
+      const i = Number(tr.dataset.i);
+      $$('[data-k]', tr).forEach(inp => inp.onchange = () => { const k = inp.dataset.k; if (k === 'on') rbs[i].off = !inp.checked; else if (k === 'fav') rbs[i].fav = inp.checked; else if (k === 'meses') rbs[i].meses = inp.checked; else if (k === 'banco') rbs[i].banco = inp.checked; else rbs[i][k] = k === 'p' ? num(inp.value) : inp.value; });
+      $('[data-up]', tr).onclick = () => { if (i) { [rbs[i - 1], rbs[i]] = [rbs[i], rbs[i - 1]]; draw(); } };
+      $('[data-dn]', tr).onclick = () => { if (i < rbs.length - 1) { [rbs[i + 1], rbs[i]] = [rbs[i], rbs[i + 1]]; draw(); } };
+      $('[data-del]', tr).onclick = async () => {
+        const rb = rbs[i]; const usos = Store.all('recibos').filter(r => num(r['r_' + rb.k])).length;
+        const prods = productos().filter(p => p.rubro === rb.k).map(p => p.l);
+        if (!(await confirmBox(`¿Eliminar el rubro <b>${esc(rb.l)}</b>?${usos ? `<br><br>⚠ ${usos} recibo(s) de este año tienen montos en este rubro: dejarán de sumarse en reportes y cuadre (los datos siguen guardados en Drive). Si solo quiere ocultarlo, mejor desmarque <i>Visible en recibo</i>.` : ''}${prods.length ? `<br><br>Productos ligados (${esc(prods.join(', '))}) quedarán sin rubro.` : ''}`, 'Eliminar'))) return;
+        rbs.splice(i, 1); draw();
+      };
+    });
+    $('#rA', el).onclick = () => modal('Agregar rubro', `<div class="form"><label class="f wide"><span>Nombre del rubro</span><input class="in" id="nrL" placeholder="Ej.: Excursión"></label><label class="f"><span>Precio $ (0 = monto libre)</span><input class="in" type="number" step="any" id="nrP" value="0"></label><label class="f"><span>Unidad</span><select class="in" id="nrU">${lista('unidades_rubro').map(u => `<option>${esc(u)}</option>`).join('')}</select></label></div>`,
+      [{ l: 'Cancelar' }, { l: '+ Agregar', pri: 1, fn: () => { const l = $('#nrL').value.trim(); if (!l) { toast('Escriba el nombre', 'bad'); return false; } let k = norm(l).replace(/[^a-z0-9]+/g, '_').slice(0, 20); while (rbs.some(r => r.k === k) || CFG.rubros.some(r => r.k === k && !rbs.includes(r))) k += '_'; rbs.push({ k, l, p: num($('#nrP').value), u: $('#nrU').value }); setTimeout(draw, 20); toast('Rubro agregado. Pulse 💾 Guardar rubros.'); } }], { sm: true });
+    $('#rS', el).onclick = async () => { CFG.rubros = rbs; await saveCfg(); draw(); };
+  };
+  draw();
+});
+
+/* ---------- UNIFORMES: PRODUCTOS, TALLAS Y PRECIOS ---------- */
+defView('cfg:productos', 'Uniformes: productos, tallas y precios', el => {
+  let ps = JSON.parse(JSON.stringify(CFG.productos || []));
+  const draw = () => {
+    el.innerHTML = cfgTabs(el, 'cfg:productos') + `<div class="alert info">Cada producto tiene sus tallas con <b>costo</b> y <b>precio de venta</b>. En el recibo, al elegir producto y talla, el precio sale solo y el monto se suma al <b>rubro</b> ligado (ej. Polo → Uniforme deportivo). También se usan en pedidos, ventas y el consolidado.</div>
+    <div class="grid g2">${ps.map((p, i) => `<div class="card" data-p="${i}"><div class="bar" style="margin-bottom:8px"><input class="in" data-pk="l" value="${esc(p.l)}" style="font-weight:700;max-width:180px" title="Nombre corto"><input class="in" data-pk="concepto" value="${esc(p.concepto || '')}" placeholder="Texto en el concepto del recibo" style="flex:1"><button class="btn sm danger" data-pdel title="Eliminar producto">🗑️</button></div>
+      <div class="bar"><label class="f" style="flex:1"><span>Rubro donde se suma</span><select class="in" data-pk="rubro"><option value="">(ninguno)</option>${CFG.rubros.map(r => `<option value="${r.k}" ${r.k === p.rubro ? 'selected' : ''}>${esc(r.l)}</option>`).join('')}</select></label></div>
+      <table class="t items-t"><thead><tr><th>Talla</th><th>Costo $</th><th>Precio $</th><th class="r">Ganancia</th><th></th></tr></thead><tbody>
+      ${p.tallas.map((t, j) => `<tr data-t="${j}"><td><input list="dlTallas" data-tk="t" value="${esc(t.t)}"></td><td><input type="number" step="any" data-tk="c" value="${t.c ?? ''}"></td><td><input type="number" step="any" data-tk="p" value="${t.p ?? ''}"></td><td class="num">${money(num(t.p) - num(t.c))}</td><td><button class="btn sm danger" data-tdel>✕</button></td></tr>`).join('')}</tbody></table>
+      <div class="bar" style="margin-top:6px"><button class="btn sm" data-tadd>+ Talla</button><button class="btn sm" data-tstd title="Agrega las tallas del catálogo que falten">+ Tallas estándar</button><span class="sp"></span><label class="f" style="flex-direction:row;align-items:center;gap:6px"><span>Precio a todas:</span><input class="in" type="number" step="any" data-pall style="width:80px"></label></div></div>`).join('')}</div>
+    <datalist id="dlTallas">${lista('tallas').map(t => `<option>${esc(t)}</option>`).join('')}</datalist>
+    <div class="bar"><button class="btn" id="pA">+ Agregar producto</button><span class="sp"></span><button class="btn pri" id="pS">💾 Guardar productos y precios</button></div>`;
+    bindTabs(el);
+    $$('[data-p]', el).forEach(card => {
+      const p = ps[card.dataset.p];
+      $$('[data-pk]', card).forEach(i => i.onchange = () => { p[i.dataset.pk] = i.value.trim(); });
+      $$('[data-tk]', card).forEach(i => i.onchange = () => { const t = p.tallas[i.closest('[data-t]').dataset.t]; t[i.dataset.tk] = i.dataset.tk === 't' ? i.value.trim().toUpperCase() : num(i.value); const tr = i.closest('tr'); $('.num', tr).textContent = money(num(t.p) - num(t.c)); });
+      $$('[data-tdel]', card).forEach(b => b.onclick = () => { p.tallas.splice(Number(b.closest('[data-t]').dataset.t), 1); draw(); });
+      $('[data-tadd]', card).onclick = () => { const last = p.tallas[p.tallas.length - 1] || {}; p.tallas.push({ t: '', c: last.c || 0, p: last.p || 0 }); draw(); };
+      $('[data-tstd]', card).onclick = () => { const last = p.tallas[p.tallas.length - 1] || {}; lista('tallas').filter(t => t !== 'ÚNICA' && !p.tallas.some(x => norm(x.t) === norm(t))).forEach(t => p.tallas.push({ t, c: last.c || 0, p: last.p || 0 })); const ord = t => { const k = lista('tallas').indexOf(t.t); return k < 0 ? 99 : k; }; p.tallas.sort((a, b) => ord(a) - ord(b)); draw(); };
+      $('[data-pall]', card).onchange = e => { if (e.target.value === '') return; p.tallas.forEach(t => t.p = num(e.target.value)); draw(); };
+      $('[data-pdel]', card).onclick = async () => { const usos = Store.all('unif_ventas').filter(v => norm(v.tipo) === norm(p.l)).length; if (!(await confirmBox(`¿Eliminar el producto <b>${esc(p.l)}</b>?${usos ? ` Tiene ${usos} venta(s) registradas este año (se conservan).` : ''}`, 'Eliminar'))) return; ps.splice(Number(card.dataset.p), 1); draw(); };
+    });
+    $('#pA', el).onclick = () => { ps.push({ l: 'NUEVO PRODUCTO', concepto: '', rubro: '', tallas: [{ t: 'ÚNICA', c: 0, p: 0 }] }); draw(); setTimeout(() => { const c = $$('[data-p]', el).pop(); c.scrollIntoView({ behavior: 'smooth' }); $('[data-pk=l]', c).select(); }, 50); };
+    $('#pS', el).onclick = async () => {
+      const nombres = ps.map(p => norm(p.l)); if (new Set(nombres).size !== nombres.length) return toast('Hay dos productos con el mismo nombre', 'bad');
+      ps.forEach(p => { p.l = String(p.l || '').toUpperCase(); p.tallas = p.tallas.filter(t => t.t); });
+      CFG.productos = ps; const nuevas = ps.flatMap(p => p.tallas.map(t => t.t)).filter(t => !lista('tallas').includes(t)); if (nuevas.length) CFG.listas.tallas = [...lista('tallas'), ...new Set(nuevas)];
+      await saveCfg(); draw();
+    };
+  };
+  draw();
+});
+
+
+/* ---------- CATÁLOGO UNIFICADO: rubros + productos + tallas + existencias (lista + ficha) ---------- */
+function grupoRubro(r, ps) { if (r.grupo) return r.grupo; if (ps.some(p => p.rubro === r.k)) return 'Productos con existencia'; if (/gradu|evento|teatro|acto|tarjeta/i.test(r.l)) return 'Eventos y graduación'; return 'Cuotas y servicios'; }
+function vendidoRubro(r) {
+  const rs = Store.all('recibos').filter(x => !isTrue(x.nulo) && num(x['r_' + r.k]));
+  const dinero = rs.reduce((a, x) => a + num(x['r_' + r.k]), 0);
+  const unid = r.meses ? rs.reduce((a, x) => a + (r.k === 'alimentos' ? mesesAlimDe(x) : num(r.p) ? num(x['r_' + r.k]) / num(r.p) : 0), 0) : num(r.p) ? dinero / num(r.p) : null;
+  return { dinero: r2(dinero), unid: unid === null ? null : r2(unid), recibos: rs.length };
+}
+defView('cfg:catalogo', 'Catálogo de cobros y productos', el => {
+  let rbs = JSON.parse(JSON.stringify(CFG.rubros)), ps = JSON.parse(JSON.stringify(CFG.productos || []));
+  let sel = LS.get('catSel', (rbs[0] || {}).k), tab = LS.get('catTab', 'gen'), q = '', sucio = false;
+  const marcar = () => { sucio = true; const b = $('#ctS', el); if (b) b.classList.add('pulse'); const t = $('#ctDirty', el); if (t) t.style.display = ''; };
+  const STK = () => stockUniformes();
+  const stkProd = (g, p) => { const xs = p.tallas.map(t => g[norm(p.l) + '|' + norm(t.t)]).filter(x => x && !x.sinDatos); return xs.length ? { disp: xs.reduce((a, x) => a + x.disp, 0), fis: xs.reduce((a, x) => a + x.fisica, 0) } : null; };
+  const colorStk = (disp, min) => disp <= 0 ? 'bad-t' : disp <= (min || 0) ? 'warn-t' : 'ok-t';
+  const draw = () => {
+    const lsc = $('.ct-l', el) ? $('.ct-l', el).scrollTop : null, vsc = $('#view').scrollTop;
+    _draw();
+    if (lsc !== null && $('.ct-l', el)) $('.ct-l', el).scrollTop = lsc;
+    $('#view').scrollTop = vsc;
+  };
+  const _draw = () => {
+    const g = STK(), r = rbs.find(x => x.k === sel) || rbs[0]; if (r) sel = r.k;
+    const grupos = {}; rbs.forEach(x => { const gr = grupoRubro(x, ps); (grupos[gr] = grupos[gr] || []).push(x); });
+    const ordenG = ['Cuotas y servicios', 'Productos con existencia', 'Eventos y graduación'];
+    const gks = Object.keys(grupos).sort((a, b) => (ordenG.indexOf(a) + 1 || 9) - (ordenG.indexOf(b) + 1 || 9) || a.localeCompare(b));
+    const stkRubro = x => { const st = ps.filter(p => p.rubro === x.k).map(p => stkProd(g, p)).filter(Boolean); return st.length ? st.reduce((a, s) => a + s.disp, 0) : null; };
+    const minRubro = x => ps.filter(p => p.rubro === x.k).flatMap(p => p.tallas).reduce((a, t) => a + num(t.min), 0);
+    const item = x => { const sk = stkRubro(x); return `<div class="ct-li ${x.k === sel ? 'on' : ''} ${x.off ? 'off' : ''}" data-k="${x.k}">${x.fav ? '⭐ ' : ''}<span>${esc(x.l)}</span><span class="sp"></span>${sk !== null ? `<b class="${colorStk(sk, minRubro(x))}">${nfmt(sk)}</b>` : x.off ? '<span class="tag warn">oculto</span>' : x.banco ? '<span class="tag">banco</span>' : `<small class="muted">${num(x.p) ? money(x.p) : ''}</small>`}</div>`; };
+    const filt = x => !q || norm(x.l).includes(norm(q)) || ps.some(p => p.rubro === x.k && norm(p.l).includes(norm(q)));
+    const misP = r ? ps.filter(p => p.rubro === r.k) : [];
+    const V = r ? vendidoRubro(r) : null;
+    el.innerHTML = cfgTabs(el, 'cfg:catalogo') + `<div class="bar"><span class="muted" style="font-size:12.5px">Rubros de cobro, productos con tallas, precios y existencias en un solo lugar. Estos cambios solo reorganizan la configuración: no alteran recibos ni montos guardados.</span><span class="sp"></span><span id="ctDirty" class="tag warn" style="${sucio ? '' : 'display:none'}">cambios sin guardar</span><button class="btn" id="ctN">+ Nuevo rubro</button><button class="btn pri ${sucio ? 'pulse' : ''}" id="ctS">💾 Guardar</button></div>
+    <div class="ct-w"><div class="card ct-l"><input class="in" id="ctQ" placeholder="🔎 Buscar…" value="${esc(q)}">
+      ${gks.map(gr => { const xs = grupos[gr].filter(filt); return xs.length ? `<div class="ct-gh">${esc(gr)}</div>${xs.map(item).join('')}` : ''; }).join('')}</div>
+    <div class="card ct-d">${!r ? '<div class="empty">Sin rubros.</div>' : `
+      <div class="bar" style="margin:0"><b style="font-size:17px">${misP.length ? '👕' : r.meses ? '🗓️' : '🧾'} ${esc(r.l)}</b>${r.off ? ' <span class="tag warn">oculto en el recibo</span>' : ''}<span class="sp"></span><button class="btn sm" id="ctDup">⧉ Duplicar</button></div>
+      <div class="ct-kpi"><div><small>Cobrado este año</small><b>${money(V.dinero)}</b></div><div><small>${r.meses ? 'Meses cobrados' : 'Unidades vendidas'}</small><b>${(() => { const u = misP.reduce((a, p) => a + p.tallas.reduce((b, t) => { const x = g[norm(p.l) + '|' + norm(t.t)]; return b + (x ? (x.ventas || []).reduce((c, v) => c + num(v.cantidad), 0) : 0); }, 0), 0); return u ? nfmt(u) : V.unid === null ? '—' : nfmt(V.unid); })()}</b></div><div><small>Recibos</small><b>${nfmt(V.recibos)}</b></div>${stkRubro(r) !== null ? `<div><small>Disponible</small><b class="${colorStk(stkRubro(r), minRubro(r))}">${nfmt(stkRubro(r))}</b></div>` : ''}</div>
+      <div class="tabs ct-tabs">${[['gen', 'General'], ['tallas', misP.length ? `Productos y tallas (${misP.length})` : 'Productos y tallas'], ['inv', 'Inventario'], ['adv', 'Avanzado']].map(([k, l]) => `<button data-ct="${k}" class="${tab === k ? 'act' : ''}">${l}</button>`).join('')}</div>
+      <div id="ctB"></div>`}</div></div>`;
+    bindTabs(el);
+    $('#ctQ', el).oninput = debounce(e => { q = e.target.value; draw(); setTimeout(() => { const i = $('#ctQ', el); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }, 0); }, 200);
+    $$('.ct-li', el).forEach(d => d.onclick = () => { sel = d.dataset.k; LS.set('catSel', sel); draw(); });
+    $$('[data-ct]', el).forEach(b => b.onclick = () => { tab = b.dataset.ct; LS.set('catTab', tab); draw(); });
+    $('#ctN', el).onclick = () => modal('Nuevo rubro', `<div class="form"><label class="f wide"><span>Nombre del rubro</span><input class="in" id="nrL" placeholder="Ej.: Excursión, Insignias, Chumpas"></label><label class="f"><span>Precio $ (0 = monto libre)</span><input class="in" type="number" step="any" id="nrP" value="0"></label><label class="f"><span>Unidad</span><select class="in" id="nrU">${lista('unidades_rubro').map(u => `<option>${esc(u)}</option>`).join('')}</select></label></div>`,
+      [{ l: 'Cancelar' }, { l: '+ Agregar', pri: 1, fn: () => { const l = $('#nrL').value.trim(); if (!l) { toast('Escriba el nombre', 'bad'); return false; } let k = norm(l).replace(/[^a-z0-9]+/g, '_').slice(0, 20); while (rbs.some(x => x.k === k) || CFG.rubros.some(x => x.k === k)) k += '_'; rbs.push({ k, l, p: num($('#nrP').value), u: $('#nrU').value }); sel = k; tab = 'gen'; marcar(); setTimeout(draw, 20); } }], { sm: true });
+    $('#ctS', el).onclick = guardar;
+    if (!r) return;
+    $('#ctDup', el).onclick = () => { let k = r.k + '_2'; while (rbs.some(x => x.k === k)) k += '_'; const c = Object.assign({}, r, { k, l: r.l + ' (copia)', fav: false }); rbs.splice(rbs.indexOf(r) + 1, 0, c); sel = k; marcar(); draw(); };
+    const B = $('#ctB', el);
+    if (tab === 'gen') {
+      B.innerHTML = `<div class="form"><label class="f"><span>Nombre</span><input class="in" data-r="l" value="${esc(r.l)}"></label><label class="f"><span>Precio $ (0 = monto libre)</span><input class="in" type="number" step="any" data-r="p" value="${r.p || ''}"></label>
+        <label class="f"><span>Unidad</span><select class="in" data-r="u">${[...new Set([...lista('unidades_rubro'), r.u || ''])].filter(Boolean).map(u => `<option ${u === r.u ? 'selected' : ''}>${esc(u)}</option>`).join('')}</select></label>
+        <label class="f"><span>Grupo en esta lista</span><input class="in" data-r="grupo" list="dlGr" value="${esc(r.grupo || '')}" placeholder="${esc(grupoRubro(Object.assign({}, r, { grupo: '' }), ps))}"></label></div>
+        <datalist id="dlGr">${['Cuotas y servicios', 'Productos con existencia', 'Eventos y graduación', ...new Set(rbs.map(x => x.grupo).filter(Boolean))].map(x => `<option>${esc(x)}</option>`).join('')}</datalist>
+        <div class="ct-flags">${[['fav', '⭐ Frecuente', 'Aparece siempre arriba en el recibo'], ['vis', '👁 Visible en recibo', 'Desmarcado: no aparece al digitar, pero sus montos siguen contando en todo'], ['meses', '🗓️ Se cobra por meses', 'Como alimentos: la cantidad son meses'], ['banco', '🏦 Se paga en banco', 'No entra al efectivo del cuadre de caja']].map(([k, l, h]) => `<label class="chk" title="${esc(h)}"><input type="checkbox" data-fl="${k}" ${(k === 'vis' ? !r.off : r[k]) ? 'checked' : ''}> ${l} <small class="muted">· ${esc(h)}</small></label>`).join('')}</div>`;
+      $$('[data-r]', B).forEach(i => i.onchange = () => { const k = i.dataset.r; r[k] = k === 'p' ? num(i.value) : i.value.trim(); if (k === 'p') ps.filter(p => p.rubro === r.k && p.sinTallas).forEach(p => p.tallas.forEach(t => t.p = r.p)); marcar(); if (k === 'l' || k === 'grupo') draw(); });
+      $$('[data-fl]', B).forEach(i => i.onchange = () => { const k = i.dataset.fl; if (k === 'vis') r.off = !i.checked; else r[k] = i.checked; marcar(); draw(); });
+    }
+    else if (tab === 'tallas') {
+      const conT = misP.filter(p => !p.sinTallas);
+      B.innerHTML = `${conT.length ? '' : `<div class="alert info" style="margin-top:0">Este rubro no tiene productos con tallas. Agregue uno si en el recibo se elige producto y talla (ej. POLO talla 8). Para llevar solo existencias sin tallas (ej. insignias), use la pestaña <b>Inventario</b>.</div>`}
+        ${conT.map(p => { const i = ps.indexOf(p); return `<div class="ct-prod" data-pi="${i}"><div class="bar" style="margin:0 0 6px"><input class="in" data-pk="l" value="${esc(p.l)}" style="font-weight:700;max-width:170px" title="Nombre corto"><input class="in" data-pk="concepto" value="${esc(p.concepto || '')}" placeholder="Texto en el concepto del recibo" style="flex:1"><button class="btn sm danger" data-pdel title="Quitar producto">🗑️</button></div>
+          <table class="t items-t"><thead><tr><th>Talla</th><th>Costo $</th><th>Precio $</th><th class="r">Ganancia</th><th class="r">Existencia</th><th class="r">Vendidas</th><th>Mínimo</th><th></th></tr></thead><tbody>
+          ${p.tallas.map((t, j) => { const x = g[norm(p.l) + '|' + norm(t.t)]; const vend = x ? (x.ventas || []).reduce((a, v) => a + num(v.cantidad), 0) : 0; return `<tr data-t="${j}"><td><input list="dlTallas" data-tk="t" value="${esc(t.t)}" style="width:70px"></td><td><input type="number" step="any" data-tk="c" value="${t.c ?? ''}" style="width:80px"></td><td><input type="number" step="any" data-tk="p" value="${t.p ?? ''}" style="width:80px"></td><td class="num ${num(t.p) - num(t.c) >= 0 ? 'ok-t' : 'bad-t'}">${money(num(t.p) - num(t.c))}</td><td class="num">${x && !x.sinDatos ? `<b class="${colorStk(x.disp, num(t.min))}">${nfmt(x.disp)}</b>` : '<span class="muted">—</span>'}</td><td class="num">${vend ? nfmt(vend) : ''}</td><td><input type="number" min="0" data-tk="min" value="${t.min ?? ''}" style="width:60px" title="Avisar cuando queden estas o menos"></td><td><button class="btn sm danger" data-tdel>✕</button></td></tr>`; }).join('')}</tbody></table>
+          <div class="bar" style="margin-top:6px"><button class="btn sm" data-tadd>+ Talla</button><button class="btn sm" data-tstd>+ Tallas estándar</button><span class="sp"></span><span class="muted" style="font-size:12px">Precio a todas:</span><input class="in" type="number" step="any" data-pall style="width:80px"><span class="muted" style="font-size:12px">Mínimo a todas:</span><input class="in" type="number" data-mall style="width:60px"></div></div>`; }).join('')}
+        <datalist id="dlTallas">${lista('tallas').map(t => `<option>${esc(t)}</option>`).join('')}</datalist>
+        <button class="btn" id="ctPA" style="margin-top:8px">+ Producto con tallas en este rubro</button>`;
+      $$('[data-pi]', B).forEach(card => { const p = ps[num(card.dataset.pi)];
+        $$('[data-pk]', card).forEach(i => i.onchange = () => { p[i.dataset.pk] = i.dataset.pk === 'l' ? i.value.trim().toUpperCase() : i.value.trim(); marcar(); });
+        $$('[data-tk]', card).forEach(i => i.onchange = () => { const t = p.tallas[i.closest('[data-t]').dataset.t]; t[i.dataset.tk] = i.dataset.tk === 't' ? i.value.trim().toUpperCase() : (i.value === '' && i.dataset.tk === 'min' ? '' : num(i.value)); marcar(); if (i.dataset.tk !== 't') { const tr = i.closest('tr'); $$('td.num', tr)[0].textContent = money(num(t.p) - num(t.c)); } });
+        $$('[data-tdel]', card).forEach(b => b.onclick = () => { p.tallas.splice(num(b.closest('[data-t]').dataset.t), 1); marcar(); draw(); });
+        $('[data-tadd]', card).onclick = () => { const last = p.tallas[p.tallas.length - 1] || {}; p.tallas.push({ t: '', c: last.c || 0, p: last.p || 0, min: last.min }); marcar(); draw(); };
+        $('[data-tstd]', card).onclick = () => { const last = p.tallas[p.tallas.length - 1] || {}; lista('tallas').filter(t => t !== 'ÚNICA' && !p.tallas.some(x => norm(x.t) === norm(t))).forEach(t => p.tallas.push({ t, c: last.c || 0, p: last.p || 0, min: last.min })); const ord = t => { const k = lista('tallas').indexOf(t.t); return k < 0 ? 99 : k; }; p.tallas.sort((a, b) => ord(a) - ord(b)); marcar(); draw(); };
+        $('[data-pall]', card).onchange = e => { if (e.target.value === '') return; p.tallas.forEach(t => t.p = num(e.target.value)); marcar(); draw(); };
+        $('[data-mall]', card).onchange = e => { if (e.target.value === '') return; p.tallas.forEach(t => t.min = num(e.target.value)); marcar(); draw(); };
+        $('[data-pdel]', card).onclick = async () => { const usos = Store.all('unif_ventas').filter(v => norm(v.tipo) === norm(p.l)).length; if (!(await confirmBox(`¿Quitar el producto <b>${esc(p.l)}</b> del catálogo?${usos ? ` Tiene ${usos} venta(s) registradas (se conservan).` : ''}`, 'Quitar'))) return; ps.splice(ps.indexOf(p), 1); marcar(); draw(); };
+      });
+      $('#ctPA', B).onclick = () => { ps.push({ l: 'NUEVO PRODUCTO', concepto: r.l, rubro: r.k, tallas: [{ t: 'ÚNICA', c: 0, p: num(r.p) }] }); marcar(); draw(); setTimeout(() => { const c = $$('[data-pi]', el).pop(); c && $('[data-pk=l]', c).select(); }, 40); };
+    }
+    else if (tab === 'inv') {
+      const sinT = misP.find(p => p.sinTallas), conT = misP.filter(p => !p.sinTallas);
+      const filas = misP.flatMap(p => p.tallas.map(t => ({ p, t, x: g[norm(p.l) + '|' + norm(t.t)] })));
+      B.innerHTML = `${!misP.length ? `<div class="alert info" style="margin-top:0">Este rubro no lleva existencias. Actívelo si vende algo que se cuenta (insignias, manuales, carnets impresos…). Las ventas se descuentan solas según la cantidad cobrada en los recibos.</div><label class="chk"><input type="checkbox" id="ctInv"> Controlar existencias de <b>${esc(r.l)}</b> (sin tallas)</label>${num(r.p) ? '' : '<p class="warn-t" style="font-size:12.5px">Ponga un precio al rubro (pestaña General) para que las ventas se cuenten en unidades.</p>'}`
+        : `${sinT && conT.length === 0 ? `<label class="chk" style="margin-bottom:8px"><input type="checkbox" id="ctInv" checked> Controlar existencias (sin tallas) · las ventas salen de los recibos</label>` : ''}
+        <table class="t"><thead><tr><th>Producto</th><th>Talla</th><th>Último conteo</th><th class="r">Entradas</th><th class="r">Salidas</th><th class="r">Física</th><th class="r">Por entregar</th><th class="r">Disponible</th><th class="r">Vendido</th><th></th></tr></thead><tbody>
+        ${filas.map(({ p, t, x }) => { const vend = x ? (x.ventas || []).reduce((a, v) => a + num(v.cantidad), 0) : 0, vd = x ? (x.ventas || []).reduce((a, v) => a + num(v.cantidad) * num(v.precio), 0) : 0; const nd = !x || x.sinDatos;
+          return `<tr><td>${esc(p.sinTallas ? r.l : p.l)}</td><td>${esc(p.sinTallas ? '—' : t.t)}</td><td>${x && x.conteo ? `${nfmt(x.conteo.q)} <small class="muted">${fdate(x.conteo.fecha)}</small>` : '<span class="muted">—</span>'}</td><td class="num">${x ? nfmt(x.entradas) : 0}</td><td class="num">${x ? nfmt(x.salidas) : 0}</td><td class="num">${nd ? '—' : nfmt(x.fisica)}</td><td class="num">${x && x.porEntregar ? nfmt(x.porEntregar) : ''}</td><td class="num">${nd ? '<span class="muted">—</span>' : `<b class="${colorStk(x.disp, num(t.min))}">${nfmt(x.disp)}</b>`}</td><td class="num">${vend ? `${nfmt(vend)} u.<br><small class="muted">${money(vd)}</small>` : ''}</td><td><button class="btn sm" data-kx="${esc(p.l)}|${esc(t.t)}" title="Kardex">📋</button></td></tr>`; }).join('')}</tbody></table>
+        <div class="bar" style="margin-top:8px"><button class="btn pri" id="ctC">📋 Registrar existencia actual</button><button class="btn" id="ctE">+ Entrada</button><button class="btn" id="ctA">± Ajuste / baja</button><span class="sp"></span><a href="#" data-go="u:exist">Ver todas las existencias →</a></div>
+        <p class="muted" style="font-size:12px">«—» = sin conteo todavía. Disponible = física − vendido sin entregar. Verde: hay · naranja: en o bajo el mínimo · rojo: agotado.</p>`}`;
+      const ci = $('#ctInv', B); if (ci) ci.onchange = () => { if (ci.checked) { if (!ps.some(p => p.rubro === r.k && p.sinTallas)) ps.push({ l: String(r.l).toUpperCase(), concepto: r.l, rubro: r.k, sinTallas: true, tallas: [{ t: 'ÚNICA', c: 0, p: num(r.p) }] }); } else { const p = ps.find(p => p.rubro === r.k && p.sinTallas); if (p) ps.splice(ps.indexOf(p), 1); } marcar(); toast(ci.checked ? 'Pulse 💾 Guardar y luego registre la existencia actual' : 'Pulse 💾 Guardar para aplicar'); draw(); };
+      const sinGuardar = () => { if (sucio) { toast('Primero pulse 💾 Guardar', 'bad'); return true; } return false; };
+      const cc = $('#ctC', B); if (cc) cc.onclick = () => { if (!sinGuardar()) conteoUniformes(draw); };
+      const ce = $('#ctE', B); if (ce) ce.onclick = () => { if (!sinGuardar()) openForm('unif_inv', { mov: 'ENTRADA', fecha: today(), tipo: misP[0].l, talla: misP[0].tallas[0] && misP[0].tallas[0].t }, { onDone: draw }); };
+      const ca = $('#ctA', B); if (ca) ca.onclick = () => { if (!sinGuardar()) openForm('unif_inv', { mov: 'AJUSTE −', fecha: today(), tipo: misP[0].l, talla: misP[0].tallas[0] && misP[0].tallas[0].t }, { onDone: draw }); };
+      $$('[data-kx]', B).forEach(b => b.onclick = () => { const [t, z] = b.dataset.kx.split('|'); kardexUniforme(t, z, draw); });
+      $$('[data-go]', B).forEach(a => a.onclick = e => { e.preventDefault(); go(a.dataset.go); });
+    }
+    else if (tab === 'adv') {
+      B.innerHTML = `<div class="form"><label class="f wide"><span>Palabras clave (al importar: recibos sin desglose cuyo concepto contenga estas palabras se asignan a este rubro; separe con |)</span><input class="in" data-r="kw" value="${esc(r.kw || '')}"></label>
+        <label class="f"><span>Clave interna (columna en Drive)</span><input class="in" value="r_${esc(r.k)}" readonly></label><label class="f"><span>Orden</span><div class="bar" style="margin:0"><button class="btn sm" id="ctUp">▲ Subir</button><button class="btn sm" id="ctDn">▼ Bajar</button></div></label></div>
+        <div class="alert warn" style="margin-top:12px">Eliminar quita el rubro del catálogo. ${V.recibos ? `<b>${V.recibos} recibo(s)</b> tienen montos en este rubro: dejarían de sumarse. Si solo quiere que no aparezca al digitar, desmarque <i>Visible en recibo</i> en General.` : 'No tiene recibos este año.'}</div>
+        <button class="btn danger" id="ctDel">🗑️ Eliminar rubro</button>`;
+      $('[data-r=kw]', B).onchange = e => { r.kw = e.target.value.trim(); marcar(); };
+      const mv = d => { const i = rbs.indexOf(r), j = i + d; if (j < 0 || j >= rbs.length) return; [rbs[i], rbs[j]] = [rbs[j], rbs[i]]; marcar(); toast('Orden cambiado (es el orden en el recibo)'); };
+      $('#ctUp', B).onclick = () => mv(-1); $('#ctDn', B).onclick = () => mv(1);
+      $('#ctDel', B).onclick = async () => { if (!(await confirmBox(`¿Eliminar el rubro <b>${esc(r.l)}</b>?`, 'Eliminar'))) return; ps.filter(p => p.rubro === r.k).forEach(p => p.rubro = ''); rbs.splice(rbs.indexOf(r), 1); sel = (rbs[0] || {}).k; marcar(); draw(); };
+    }
+  };
+  const guardar = async () => {
+    const nombres = ps.map(p => norm(p.l)); if (new Set(nombres).size !== nombres.length) return toast('Hay dos productos con el mismo nombre', 'bad');
+    ps.forEach(p => { p.l = String(p.l || '').toUpperCase(); p.tallas = p.tallas.filter(t => t.t); if (p.sinTallas) { const rb = rbs.find(x => x.k === p.rubro); if (rb && num(rb.p)) p.tallas.forEach(t => t.p = num(rb.p)); } });
+    CFG.rubros = rbs; CFG.productos = ps;
+    const nuevas = ps.filter(p => !p.sinTallas).flatMap(p => p.tallas.map(t => t.t)).filter(t => !lista('tallas').includes(t)); if (nuevas.length) CFG.listas.tallas = [...lista('tallas'), ...new Set(nuevas)];
+    await saveCfg(); sucio = false; rbs = JSON.parse(JSON.stringify(CFG.rubros)); ps = JSON.parse(JSON.stringify(CFG.productos)); draw();
+  };
+  draw(); return () => { if (!sucio) draw(); };
+});
+/* ---------- MÓDULOS Y CAMPOS ---------- */
+const TIPOS_CAMPO = { text: 'Texto', textarea: 'Texto largo', number: 'Número', money: 'Dinero $', date: 'Fecha', time: 'Hora', select: 'Lista desplegable', check: 'Casilla (sí/no)' };
+defView('cfg:mods', 'Módulos y campos', el => {
+  let sel = LS.get('cfgMod', 'recibos'); if (!MOD[sel]) sel = 'recibos';
+  const draw = () => {
+    const mc = CFG.modulos[sel] = CFG.modulos[sel] || {};
+    const base = (MOD[sel].fieldsFn ? MOD[sel].fieldsFn() : MOD[sel].fields);
+    const ov = mc.fields = mc.fields || {};
+    mc.custom = mc.custom || [];
+    el.innerHTML = cfgTabs(el, 'cfg:mods') + `<div class="grid" style="grid-template-columns:260px 1fr"><div class="card" style="padding:8px"><div class="sec-list" style="max-height:70vh;border:0">${Object.keys(MOD).map(k => `<label style="cursor:pointer;${k === sel ? 'background:var(--acc2);font-weight:700' : ''}" data-m="${k}">${modOn(k) ? '🟢' : '⚪'} ${esc(modLabel(k))}</label>`).join('')}</div></div>
+    <div class="card"><h3>${esc(modLabel(sel))} <small>· ${MOD[sel].scope === 'g' ? 'global (no depende del año)' : 'por año'} · ${Store.all(sel).length} registro(s)</small></h3>
+      <div class="form"><label class="f"><span>Nombre visible del módulo</span><input class="in" id="mL" value="${esc(mc.label || '')}" placeholder="${esc(MOD[sel].label)}"></label><div style="align-self:end"><label class="chk"><input type="checkbox" id="mOn" ${mc.off ? '' : 'checked'}> Módulo activo (visible en el menú)</label></div></div>
+      <h3 style="margin-top:16px">Campos</h3><div class="tw" style="max-height:none"><table class="t"><thead><tr><th>Campo</th><th>Etiqueta visible</th><th>Tipo</th><th class="c">Oculto</th><th class="c">Obligatorio</th><th class="c">En tabla</th><th></th></tr></thead><tbody>
+      ${base.concat(mc.custom).map(f => { const o = ov[f.k] || {}; const inTab = o.tabla !== undefined ? o.tabla : ((MOD[sel].table || []).includes(f.k) || !!f.custom); return `<tr data-k="${f.k}"><td class="muted">${esc(f.k)}${f.custom ? ' <span class="tag">personalizado</span>' : ''}</td><td><input class="in" data-o="l" value="${esc(o.l || (f.custom ? f.l : ''))}" placeholder="${esc(f.l)}"></td><td>${esc(TIPOS_CAMPO[f.t] || f.t)}${f.t === 'select' && f.custom ? `<br><small class="muted">${esc((f.o || []).join(', ').slice(0, 50))}</small>` : ''}</td><td class="c"><input type="checkbox" data-o="hide" ${o.hide ?? f.hide ? 'checked' : ''}></td><td class="c"><input type="checkbox" data-o="req" ${o.req ?? f.req ? 'checked' : ''}></td><td class="c"><input type="checkbox" data-o="tabla" ${inTab ? 'checked' : ''}></td><td>${f.custom ? '<button class="btn sm danger" data-del>✕</button>' : ''}</td></tr>`; }).join('')}</tbody></table></div>
+      <h3 style="margin-top:16px">Agregar campo personalizado</h3><div class="form"><label class="f"><span>Etiqueta</span><input class="in" id="nL" placeholder="Ej.: Responsable de entrega"></label><label class="f"><span>Tipo</span><select class="in" id="nT">${Object.entries(TIPOS_CAMPO).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label><label class="f wide"><span>Opciones (solo para lista desplegable, separadas por coma)</span><input class="in" id="nO"></label></div>
+      <div class="bar" style="margin-top:12px"><button class="btn" id="nA">+ Agregar campo</button><span class="sp"></span><button class="btn pri" id="mS">💾 Guardar cambios del módulo</button></div></div></div>
+    <div class="card"><h3>Vistas especiales del menú</h3><p class="muted">Desmarque las opciones del menú que no usa.</p><div class="chips">${MENU.flatMap(m => m.items.filter(it => !it.mod).map(it => `<label class="chip ${(CFG.menuOculto || []).includes(it.v) ? '' : 'on'}"><input type="checkbox" data-mv="${it.v}" ${(CFG.menuOculto || []).includes(it.v) ? '' : 'checked'} style="display:none">${esc(m.g)} › ${esc(it.l)}</label>`)).join('')}</div></div>`;
+    bindTabs(el);
+    $$('[data-m]', el).forEach(l => l.onclick = () => { sel = l.dataset.m; LS.set('cfgMod', sel); draw(); });
+    $$('[data-mv]', el).forEach(c => c.onchange = async () => { const s = new Set(CFG.menuOculto || []); c.checked ? s.delete(c.dataset.mv) : s.add(c.dataset.mv); CFG.menuOculto = [...s]; c.parentElement.classList.toggle('on', c.checked); await saveCfg(true); renderMenu(); });
+    const leer = () => {
+      mc.label = $('#mL', el).value.trim(); mc.off = !$('#mOn', el).checked;
+      $$('tr[data-k]', el).forEach(tr => { const k = tr.dataset.k; const cu = mc.custom.find(f => f.k === k); const o = {}; const l = $('[data-o=l]', tr).value.trim(); if (cu) { if (l) cu.l = l; } else if (l) o.l = l; o.hide = $('[data-o=hide]', tr).checked; o.req = $('[data-o=req]', tr).checked; o.tabla = $('[data-o=tabla]', tr).checked; ov[k] = o; });
+    };
+    $$('[data-del]', el).forEach(b => b.onclick = async () => { const k = b.closest('tr').dataset.k; if (!(await confirmBox('¿Quitar este campo del formulario? Los datos ya guardados se conservan en Drive.'))) return; mc.custom = mc.custom.filter(f => f.k !== k); delete ov[k]; await saveCfg(true); draw(); });
+    $('#nA', el).onclick = async () => { const l = $('#nL', el).value.trim(); if (!l) return toast('Escriba la etiqueta', 'bad'); leer(); const k = 'c_' + norm(l).replace(/[^a-z0-9]+/g, '_').slice(0, 24); if (mc.custom.some(f => f.k === k)) return toast('Ya existe', 'bad'); const t = $('#nT', el).value; mc.custom.push({ k, l, t, o: t === 'select' ? $('#nO', el).value.split(',').map(s => s.trim()).filter(Boolean) : undefined }); await saveCfg(true); toast('Campo agregado ✔', 'ok'); draw(); };
+    $('#mS', el).onclick = async () => { leer(); await saveCfg(); draw(); };
+  };
+  draw();
+});
+
+/* ---------- AÑOS ---------- */
+defView('cfg:anios', 'Años de trabajo', el => {
+  const ys = [...new Set([...Store.years, Store.year, ...LS.get('localYears', [])])].sort();
+  el.innerHTML = cfgTabs(el, 'cfg:anios') + `<div class="alert info">Cada año se guarda en un archivo propio de Google Sheets (bloques por año). Así el sistema se mantiene rápido sin importar cuántos registros acumule. Los catálogos globales (proveedores, personal, artículos, agenda, plantillas, precios) se comparten entre años.</div>
+    <div class="card"><h3>Años disponibles</h3><div class="chips">${ys.map(y => `<span class="chip ${y === Store.year ? 'on' : ''}" data-y="${y}">${y}${Store.years.includes(y) ? ' ☁️' : ' 💻'}</span>`).join('')}</div><p class="muted" style="font-size:12px">☁️ = existe en Drive · 💻 = solo en este equipo (se crea en Drive al sincronizar). Clic para cambiar.</p></div>
+    <div class="card"><h3>Crear año nuevo</h3><div class="form"><label class="f"><span>Año</span><input class="in" type="number" id="yN" value="${Math.max(...ys) + 1}"></label>
+      <div class="wide"><label class="chk"><input type="checkbox" id="yE" checked> Copiar la base de estudiantes del año ${Store.year} (luego actualice grados y secciones)</label></div></div>
+      <div class="bar" style="margin-top:10px"><span class="sp"></span><button class="btn pri" id="yC">Crear año</button></div></div>`;
+  bindTabs(el);
+  $$('[data-y]', el).forEach(c => c.onclick = () => switchYear(Number(c.dataset.y)));
+  $('#yC', el).onclick = async () => {
+    const y = num($('#yN', el).value); if (y < 2000 || y > 2100) return toast('Año inválido', 'bad');
+    if (Sync.mode !== 'local') {
+      const t = toast('Creando archivo del año ' + y + ' en Drive…', '', 30000);
+      try { const r = await Sync.call({ action: 'createYear', year: y, copyFrom: Store.year, copyMods: $('#yE', el).checked ? ['estudiantes'] : [] }); Store.years = r.years; t.remove(); toast('Año ' + y + ' creado ✔', 'ok'); }
+      catch (e) { t.remove(); toast('Sin conexión: el año se creará en Drive al sincronizar.', 'bad'); }
+    } else if ($('#yE', el).checked) {
+      const est = Store.all('estudiantes').map(e => Object.assign({}, e, { _id: e._id + '_' + y }));
+      const prev = Store.year; Store.year = y; await Store.loadAll(); await Store.saveMany('estudiantes', est, { noSync: true }); Store.year = prev;
+    }
+    await switchYear(y);
+  };
+});
+
+/* ---------- IMPORTAR / EXPORTAR ---------- */
+const ALIAS = { 'n° de recibo': 'numero', 'no de recibo': 'numero', 'numero de recibo': 'numero', 'recibo': 'numero', 'n°': '', 'n': '', 'grado01': 'grado', 'seccion2': 'seccion', 'opcion': 'opcion', 'dui de responsable': 'dui_resp', 'dui responsable': 'dui_resp', 'meses que paga': 'meses_alim', 'meses alim': 'meses_alim', 'pago': 'pago', 'total': 'total', 'serie': 'serie', 'observacion': 'obs', 'observaciones': 'obs', 'nombre del docente (apellidos, nombres)': 'nombre', 'nombre del docente': 'nombre', 'proveedor / nombre': 'proveedor', 'debe (+)': 'debe', 'haber (-)': 'haber', 'no. de documento': 'documento', 'saldo (auto)': '', 'n° caja (auto)': '', 'mes (auto)': '', 'alertas (auto)': '', 'cantidad a devolver': 'cantidad', '¿recibo anulado?': 'anulado', 'anexo a': 'anexo', 'no.': 'boleta', 'mes que cancela': 'mes', 'n° recibo': 'recibo', 'n° de comprobante': 'comprobante', 'descripcion': 'articulo', 'n° dui o nit': 'dui_nit', 'nombre (igual que en el registro)': 'nombre' };
+let ALIASN = null;
+function autoMap(mod, header) {
+  if (!ALIASN) { ALIASN = {}; for (const k in ALIAS) ALIASN[norm(k)] = ALIAS[k]; }
+  const fs = fieldsOf(mod).filter(f => f.t !== 'calc');
+  const ns = header.map(h => norm(String(h || '').replace(/\n/g, ' ')));
+  const out = ns.map(() => ''); const taken = new Set();
+  // 1) alias conocidos de sus archivos (prioridad)
+  ns.forEach((n, i) => { const k = ALIASN[n]; if (k && fs.some(f => f.k === k) && !taken.has(k)) { out[i] = k; taken.add(k); } else if (k === '') out[i] = '-'; });
+  // 2) coincidencia exacta con etiqueta o clave
+  ns.forEach((n, i) => { if (out[i] || !n) return; const f = fs.find(f => !taken.has(f.k) && (norm(f.l) === n || f.k === n || norm(f.k.replace(/^r_/, '')) === n)); if (f) { out[i] = f.k; taken.add(f.k); } });
+  // 3) coincidencia parcial (solo encabezados largos)
+  ns.forEach((n, i) => { if (out[i] || n.length < 4) return; const f = fs.find(f => !taken.has(f.k) && norm(f.l).length >= 4 && (norm(f.l).startsWith(n) || n.startsWith(norm(f.l)))); if (f) { out[i] = f.k; taken.add(f.k); } });
+  return out.map(x => x === '-' ? '' : x);
+}
+function parseCSV(t) {
+  const sep = (t.split('\n')[0].match(/\t/g) || []).length ? '\t' : (t.split('\n')[0].match(/;/g) || []).length > (t.split('\n')[0].match(/,/g) || []).length ? ';' : ',';
+  const rows = []; let row = [], cur = '', q = false;
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i];
+    if (q) { if (c === '"') { if (t[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += c; }
+    else if (c === '"') q = true; else if (c === sep) { row.push(cur); cur = ''; } else if (c === '\n') { row.push(cur); rows.push(row); row = []; cur = ''; } else if (c !== '\r') cur += c;
+  }
+  if (cur || row.length) { row.push(cur); rows.push(row); }
+  return rows;
+}
+defView('cfg:import', 'Importar y exportar', el => {
+  let aoa = null, hdr = 0, map = [];
+  el.innerHTML = cfgTabs(el, 'cfg:import') + `<div class="card"><h3>1. Importar datos desde Excel</h3><p class="muted">Sirve para migrar sus archivos actuales (BD de estudiantes, hoja RC de recibos, caja chica, directorio, docentes, etc.). Puede subir el archivo o copiar las celdas en Excel y pegarlas aquí.</p>
+    <div class="form"><label class="f"><span>Módulo destino</span><select class="in" id="iM">${Object.keys(MOD).map(k => `<option value="${k}">${esc(modLabel(k))}</option>`).join('')}</select></label>
+    <label class="f"><span>Archivo (.xlsx, .xlsm, .csv)</span><input class="in" type="file" id="iF" accept=".xlsx,.xlsm,.xls,.csv,.txt"></label><label class="f"><span>Hoja del archivo</span><select class="in" id="iS"></select></label>
+    <label class="f wide"><span>…o pegue aquí las celdas copiadas de Excel (incluya la fila de encabezados)</span><textarea class="in" id="iP" rows="4"></textarea></label></div>
+    <div id="iMap"></div></div>
+    <div class="grid g2"><div class="card"><h3>2. Exportar</h3><p class="muted">Descarga todos los módulos del año ${Store.year} en un solo Excel (una hoja por módulo).</p><button class="btn pri" id="eX">⬇️ Exportar año a Excel</button></div>
+    <div class="card"><h3>4. Limpiar duplicados</h3><p class="muted">Busca registros <b>idénticos</b> (mismos datos en todos los campos) en todos los módulos del año ${Store.year} y en los catálogos, por ejemplo si importó el mismo archivo dos veces. Se conserva una copia de cada uno.</p><div class="bar"><button class="btn" id="dupB">🔍 Revisar duplicados</button></div><div id="dupOut"></div></div>
+    <div class="card"><h3>3. Respaldo completo</h3><p class="muted">Archivo .json con todo lo que hay en este equipo (todos los años y la configuración). Sirve para pasar datos a otra PC sin internet.</p><div class="bar"><button class="btn" id="bJ">⬇️ Descargar respaldo</button><label class="btn">⬆️ Restaurar respaldo<input type="file" id="bR" accept=".json" style="display:none"></label></div></div></div>`;
+  bindTabs(el);
+  let wb = null;
+  const mod = () => $('#iM', el).value;
+  const drawMap = () => {
+    if (!aoa || !aoa.length) { $('#iMap', el).innerHTML = ''; return; }
+    const header = aoa[hdr] || []; if (!map.length) map = autoMap(mod(), header);
+    const fs = fieldsOf(mod()).filter(f => f.t !== 'calc' && f.t !== 'items');
+    const datos = aoa.slice(hdr + 1).filter(r => r.some(c => String(c ?? '').trim() !== ''));
+    const keyDef = { recibos: 'numero', estudiantes: 'nie', personal: 'nombre', proveedores: 'nombre', articulos: 'nombre', cheques: 'numero' }[mod()] || '';
+    $('#iMap', el).innerHTML = `<h3 style="margin-top:14px">Relacionar columnas <small>· ${datos.length} fila(s) de datos</small></h3>
+      <div class="bar"><label class="f"><span>Fila de encabezados</span><input class="in" type="number" id="iH" value="${hdr + 1}" min="1" style="width:90px"></label>
+      <label class="f"><span>Evitar duplicados por</span><select class="in" id="iK"><option value="">(no verificar)</option>${fs.map(f => `<option value="${f.k}" ${f.k === keyDef ? 'selected' : ''}>${esc(f.l)}</option>`).join('')}</select></label>
+      <label class="f"><span>Si ya existe</span><select class="in" id="iU"><option value="skip">Omitir</option><option value="upd">Actualizar</option></select></label></div>
+      <div class="tw" style="max-height:340px"><table class="t"><thead><tr>${header.map((h, i) => `<th style="cursor:default"><div style="font-weight:400;opacity:.8">${esc(String(h ?? '').slice(0, 30)) || '(col ' + (i + 1) + ')'}</div><select data-c="${i}" style="margin-top:4px;max-width:150px;color:#000">${['<option value="">— ignorar —</option>'].concat(fs.map(f => `<option value="${f.k}" ${map[i] === f.k ? 'selected' : ''}>${esc(f.l)}</option>`)).join('')}</select></th>`).join('')}</tr></thead>
+      <tbody>${datos.slice(0, 6).map(r => `<tr>${header.map((_, i) => `<td>${esc(String(r[i] ?? '').slice(0, 40))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
+      <div class="bar" style="margin-top:10px"><span class="muted" id="iInfo">${map.filter(Boolean).length} columna(s) relacionada(s)</span><span class="sp"></span><button class="btn pri" id="iGo">⬆️ Importar ${datos.length} fila(s)</button></div>`;
+    $('#iH', el).onchange = e => { hdr = Math.max(0, num(e.target.value) - 1); map = []; drawMap(); };
+    $$('[data-c]', el).forEach(s => s.onchange = () => { map[Number(s.dataset.c)] = s.value; $('#iInfo', el).textContent = map.filter(Boolean).length + ' columna(s) relacionada(s)'; });
+    $('#iGo', el).onclick = () => importar(mod(), datos, map, $('#iK', el).value, $('#iU', el).value);
+  };
+  const loadAoa = a => { aoa = a; map = []; hdr = 0; for (let i = 0; i < Math.min(15, a.length); i++) { if (autoMap(mod(), a[i]).filter(Boolean).length >= 2) { hdr = i; break; } } drawMap(); };
+  $('#iM', el).onchange = () => { map = []; drawMap(); };
+  $('#iP', el).oninput = debounce(e => { if (e.target.value.trim()) loadAoa(parseCSV(e.target.value)); }, 300);
+  $('#iF', el).onchange = e => {
+    const f = e.target.files[0]; if (!f) return;
+    const rd = new FileReader();
+    if (/\.csv$|\.txt$/i.test(f.name)) { rd.onload = () => loadAoa(parseCSV(rd.result)); rd.readAsText(f); return; }
+    if (!window.XLSX) return toast('El lector de Excel no cargó (requiere internet). Copie y pegue las celdas en el cuadro.', 'bad', 6000);
+    rd.onload = () => { wb = XLSX.read(rd.result, { type: 'array', cellDates: true }); $('#iS', el).innerHTML = wb.SheetNames.map(n => `<option>${esc(n)}</option>`).join(''); const pick = () => loadAoa(XLSX.utils.sheet_to_json(wb.Sheets[$('#iS', el).value], { header: 1, raw: true, defval: '' })); $('#iS', el).onchange = pick; pick(); };
+    rd.readAsArrayBuffer(f);
+  };
+  $('#eX', el).onclick = () => {
+    if (!window.XLSX) return toast('Requiere internet para generar el Excel. Use Exportar en cada módulo (CSV).', 'bad');
+    const book = XLSX.utils.book_new();
+    Object.keys(MOD).forEach(m => { const rows = Store.all(m); if (!rows.length) return; const fs = fieldsOf(m).filter(f => f.t !== 'items'); const a = [fs.map(f => f.l)].concat(rows.map(r => fs.map(f => f.t === 'calc' ? '' : f.t === 'check' ? (isTrue(r[f.k]) ? 'SÍ' : '') : r[f.k] ?? ''))); XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(a), modLabel(m).replace(/[\\\/?*\[\]:]/g, '').slice(0, 30)); });
+    XLSX.writeFile(book, `Suministros ${Store.year}.xlsx`);
+  };
+  $('#dupB', el).onclick = async () => {
+    const r = duplicadosExactos();
+    const tot = Object.values(r).reduce((a, x) => a + x.length, 0);
+    if (!tot) { $('#dupOut', el).innerHTML = '<div class="alert ok" style="margin:8px 0 0">✔ No hay registros duplicados.</div>'; return; }
+    $('#dupOut', el).innerHTML = `<div class="alert warn" style="margin:8px 0">${Object.entries(r).filter(([, v]) => v.length).map(([m, v]) => `<b>${esc(modLabel(m))}</b>: ${v.length} copia(s) repetida(s)`).join('<br>')}</div><button class="btn danger" id="dupX">🧹 Eliminar ${tot} duplicado(s)</button>`;
+    $('#dupX', el).onclick = async () => { if (!(await confirmBox(`Se eliminarán ${tot} copia(s) repetida(s); se conserva un registro de cada uno. ¿Continuar?`, 'Eliminar duplicados'))) return; const n = await limpiarDuplicados(true); toast(`✔ ${n} duplicado(s) eliminado(s)`, 'ok'); $('#dupOut', el).innerHTML = '<div class="alert ok" style="margin:8px 0 0">✔ Listo, sin duplicados.</div>'; };
+  };
+  $('#bJ', el).onclick = async () => { const rows = await IDB.all('rows'); downloadBlob(JSON.stringify({ app: 'suministros', fecha: new Date().toISOString(), cfg: CFG, rows }), `Respaldo suministros ${today()}.json`, 'application/json'); };
+  $('#bR', el).onchange = e => {
+    const f = e.target.files[0]; if (!f) return; const rd = new FileReader();
+    rd.onload = async () => {
+      try {
+        const d = JSON.parse(rd.result); if (d.app !== 'suministros') throw new Error('Archivo no válido');
+        if (!(await confirmBox(`Se cargarán ${d.rows.length} registro(s) y la configuración. Los registros que ya existen (mismo identificador) se actualizan, no se duplican, y todo se sube a Drive. ¿Continuar?`, 'Cargar'))) return;
+        await restaurarRespaldo(d); toast('Datos cargados ✔ · subiendo a Drive…', 'ok', 6000);
+        const nd = await limpiarDuplicados(false);
+        if (nd && await confirmBox(`Se encontraron <b>${nd}</b> registro(s) idénticos a otros (probablemente de una carga anterior del mismo archivo). ¿Eliminar las copias y dejar uno de cada uno?`, 'Eliminar copias')) toast(`✔ ${await limpiarDuplicados(true)} copia(s) eliminada(s)`, 'ok');
+        go('home');
+      } catch (x) { toast('No se pudo restaurar: ' + x.message, 'bad'); }
+    };
+    rd.readAsText(f);
+  };
+});
+/** Carga un respaldo (.json) en este equipo y lo pone en cola para subir a Drive.
+    reemplazar=true: borra antes los datos de este equipo (se usa en el demo). */
+async function restaurarRespaldo(d, reemplazar) {
+  if (reemplazar) { const keep = { seedVer: await IDB.get('seedVer'), year: await IDB.get('year') }; await IDB.clearAll(); Store.queued = new Set(); for (const k in keep) if (keep[k] !== undefined) await IDB.set(k, keep[k]); }
+  const q = d.rows.map(o => ({ k: o.k, b: o.b, mod: o.b.split('|')[1], d: o.d }));
+  for (let i = 0; i < d.rows.length; i += 2000) { await IDB.put('rows', d.rows.slice(i, i + 2000)); await IDB.put('queue', q.slice(i, i + 2000)); }
+  const ys = LS.get('localYears', []); d.rows.forEach(o => { const y = Number(o.b.split('|')[0]); if (y && !ys.includes(y)) ys.push(y); }); LS.set('localYears', ys);
+  if (d.cfg) { CFG = deepMerge(DEFAULT_CFG(), d.cfg); CFG.seeded = true; await saveCfg(true); renderMenu(); }
+  await Store.loadAll(); renderYears(); Sync.run();
+}
+/** Registros idénticos en todos sus campos de datos (por módulo). Devuelve {mod: [copias a eliminar]} */
+const CAMPOS_TECNICOS = new Set(['_id', '_upd', '_srv', '_del', 'orden', 'est_id', 'art_id', 'arr_id', 'rec_id', 'per_id', 'grupo', 'mes', 'total']);
+function duplicadosExactos() {
+  const out = {};
+  for (const m of Object.keys(MOD)) {
+    const fs = fieldsOf(m).filter(f => f.t !== 'calc' && !CAMPOS_TECNICOS.has(f.k)).map(f => f.k);
+    const vistos = new Map(); out[m] = [];
+    Store.all(m).slice().sort((a, b) => num(b._upd) - num(a._upd)).forEach(r => {
+      const firma = JSON.stringify(fs.map(k => { const v = r[k]; return v === undefined || v === null ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v); }));
+      if (firma === JSON.stringify(fs.map(() => ''))) return;
+      if (vistos.has(firma)) out[m].push(r); else vistos.set(firma, r);
+    });
+  }
+  return out;
+}
+async function limpiarDuplicados(ejecutar) {
+  const r = duplicadosExactos(); let n = 0;
+  if (!ejecutar) return Object.values(r).reduce((a, x) => a + x.length, 0);
+  for (const m in r) { if (!r[m].length) continue; n += r[m].length; for (let i = 0; i < r[m].length; i += 500) await Store.saveMany(m, r[m].slice(i, i + 500).map(x => Object.assign({}, x, { _del: 1 }))); }
+  for (const x of (r.recibos || [])) if ((x.unif || []).length) await syncVentasRecibo(Object.assign({}, x, { _del: 1 }));
+  return n;
+}
+
+async function importar(mod, datos, map, key, modo) {
+  const fm = fieldMap(mod); const def = MOD[mod];
+  const exist = new Map(); if (key) Store.all(mod).forEach(r => { const v = norm(r[key]); if (v) exist.set(v, r); });
+  const nuevos = []; let omit = 0, upd = 0, incompletas = 0, lastFecha = '';
+  const reqs = fieldsOf(mod).filter(f => f.req && f.t !== 'calc').map(f => f.k);
+  const canon = {}; fieldsOf(mod).filter(f => f.t === 'select').forEach(f => { const m = {}; optsOf(f).forEach(o => { const v = typeof o === 'object' ? o.v : o; m[norm(v)] = v; }); canon[f.k] = m; });
+  datos.forEach(row => {
+    let r = {};
+    map.forEach((k, i) => { if (!k) return; let v = row[i]; if (v instanceof Date) v = ymd(v); if (v === '' || v === null || v === undefined || /^(none|null|undefined|nan|#n\/a|#value!|#ref!)$/i.test(String(v).trim())) return; if (r[k] !== undefined && r[k] !== '') return; r[k] = typeof v === 'string' ? v.trim() : v; });
+    if (!Object.keys(r).length) return;
+    coerceRow(mod, r); delete r._upd; delete r._del;
+    for (const k in canon) if (r[k] !== undefined && r[k] !== '') { const n = norm(r[k]); const c = canon[k][n] || canon[k][n + '°'] || canon[k][n.replace(/\s*grado$/, '')]; if (c !== undefined) r[k] = c; }
+    if (fm.mes && r.mes) r.mes = cap(String(r.mes).toLowerCase());
+    if (mod === 'recibos') {
+      if (/NULO|ANULAD/i.test([r.concepto, r.nombre, r.grado, r.seccion].join(' '))) { r.nulo = true; if (/NULO/i.test(r.grado || '')) r.grado = ''; }
+      if (!r.tipo) { const g = norm(r.grado); r.tipo = !g || gradosList().some(x => norm(x) === g) ? 'Estudiante' : /docente|profesor/.test(g) ? 'Docente' : /padre|madre/.test(g) ? 'Padre/Madre' : 'Externo'; if (r.tipo !== 'Estudiante') r.grado = ''; }
+    }
+    if (mod === 'recibos') {
+      if (!r.serie) r.serie = serieDeNumero(r.numero);
+      if (!r.fecha && r.numero && lastFecha) { r.fecha = lastFecha; r.obs = ((r.obs || '') + ' · fecha tomada del recibo anterior').replace(/^ · /, ''); }
+      if (r.fecha) lastFecha = r.fecha;
+      const suma0 = rubrosOn().reduce((t, rb) => t + num(r['r_' + rb.k]), 0), resto = r2(num(r.pago) - suma0);
+      if (!r.nulo && resto > 0.004) { const rb = rubrosOn().find(x => x.kw && new RegExp(x.kw, 'i').test(r.concepto || '')); if (rb) r['r_' + rb.k] = r2(num(r['r_' + rb.k]) + resto); }
+    }
+    if (reqs.some(k => r[k] === undefined || r[k] === '') && !(mod === 'recibos' && r.nulo && r.numero)) { incompletas++; return; }
+    if (mod === 'estudiantes' && !r.estado) r.estado = 'ACTIVO';
+    if (mod === 'cajachica') { const t = norm(r.tipo); if (/gasto/.test(t)) r.tipo = 'GASTO'; else if (/inicio/.test(t)) r.tipo = 'INICIO'; else if (/reintegro|reposic/.test(t)) r.tipo = num(r.debe) > 0 && /CHEQUE/i.test(r.comprobante || '') ? 'REPOSICIÓN' : 'REINTEGRO'; if (!r.concepto && (num(r.debe) || num(r.haber))) r.concepto = '(sin concepto)'; }
+    if (key && r[key] !== undefined) { const ex = exist.get(norm(r[key])); if (ex) { if (modo === 'upd') { r = Object.assign({}, ex, r); upd++; } else { omit++; return; } } }
+    if (def.beforeSave) { try { def.beforeSave(r); } catch (e) { } }
+    nuevos.push(r);
+    if (key && r[key] !== undefined) exist.set(norm(r[key]), r);
+  });
+  if (!nuevos.length) return toast(`No hay filas nuevas para importar (${omit} duplicada(s), ${incompletas} sin campos obligatorios).`, 'bad', 6000);
+  const t = toast(`Importando ${nuevos.length} registro(s)…`, '', 60000);
+  for (let i = 0; i < nuevos.length; i += 500) await Store.saveMany(mod, nuevos.slice(i, i + 500), { noSync: true });
+  t.remove(); toast(`✔ ${nuevos.length - upd} nuevo(s), ${upd} actualizado(s), ${omit} duplicado(s) omitido(s)${incompletas ? `, ${incompletas} fila(s) sin datos obligatorios (totales o vacías) omitida(s)` : ''}. Subiendo a Drive…`, 'ok', 9000);
+  Sync.run(); go('m:' + mod);
+}
+
+/* ---------- DIAGNÓSTICO DE CONEXIÓN (versión offline) ---------- */
+async function diagConexion(url, token) {
+  const pasos = [];
+  const m = modal('🩺 Probar conexión con Google', '<div id="dgOut"><p class="muted">Probando…</p></div>', [{ l: 'Copiar resultado', fn: () => { navigator.clipboard && navigator.clipboard.writeText($('#dgOut').innerText); toast('Copiado'); return false; } }, { l: 'Cerrar', pri: true }]);
+  const pintar = (fin) => { const o = $('#dgOut'); if (!o) return; o.innerHTML = `<table class="tbl"><tbody>${pasos.map(p => `<tr><td style="width:28px">${p.ok === true ? '✅' : p.ok === false ? '❌' : '⏳'}</td><td><b>${esc(p.t)}</b><div class="muted" style="font-size:12px">${esc(p.d || '')}</div></td></tr>`).join('')}</tbody></table>` + (fin ? `<div class="card" style="margin-top:10px;background:var(--bg)"><b>${fin.ok ? '✅ ' : '👉 '}${esc(fin.t)}</b><div style="margin-top:4px">${fin.h}</div></div>` : ''); };
+  const paso = (t) => { const p = { t, ok: null }; pasos.push(p); pintar(); return p; };
+  const fin = (ok, t, h) => pintar({ ok, t, h });
+  const timeout = (ms) => { const c = new AbortController(); setTimeout(() => c.abort(), ms); return c.signal; };
+  const post = (req) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(Object.assign({ token }, req)), redirect: 'follow', credentials: 'omit', signal: timeout(60000) });
+
+  let p = paso('Internet en este equipo');
+  p.ok = navigator.onLine; p.d = navigator.onLine ? 'Conectado' : 'El equipo no tiene internet'; pintar();
+  if (!p.ok) return fin(false, 'Sin internet', 'Conéctese a internet y vuelva a probar.');
+
+  p = paso('Formato de la URL');
+  if (!/^https:\/\/script\.google\.com\/.*macros\/s\/[^/]+\/exec$/.test(url)) {
+    p.ok = false; p.d = url || '(vacía)';
+    return fin(false, 'La URL no es correcta', /\/dev$/.test(url) ? 'Usó la URL que termina en <b>/dev</b> (es de pruebas y pide iniciar sesión). Copie la que termina en <b>/exec</b>: Implementar › Administrar implementaciones.' : 'Debe ser la URL de la aplicación web y terminar en <b>/exec</b> (Implementar › Administrar implementaciones › copiar URL).');
+  }
+  p.ok = true; p.d = url.length > 70 ? url.slice(0, 55) + '…' + url.slice(-12) : url; pintar();
+
+  let modo = 'fetch';
+  const enviar = async (req) => {
+    if (modo === 'jsonp') { try { return { ok: true, data: await jsonpCall(url, Object.assign({ token }, req)) }; } catch (e) { if (e && e.error === 'NET') throw new Error(e.msg); return e; } }
+    const r = await post(req); const t = await r.text(); try { return JSON.parse(t); } catch (x) { return { html: t.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 200) }; }
+  };
+  p = paso('Este archivo puede comunicarse con Google (prueba de lectura)');
+  try {
+    const r = await fetch(url + '?ping=1', { credentials: 'omit', signal: timeout(30000) });
+    const t = await r.text(); let j = null; try { j = JSON.parse(t); } catch (x) {}
+    if (!j || !j.ok) { p.ok = false; p.d = t.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 160); pintar(); return fin(false, 'Google no devolvió datos', 'Revise en Implementar › Administrar implementaciones que <b>Quién tiene acceso</b> sea <b>Cualquier usuario</b>.'); }
+    p.ok = true; p.d = 'Respondió: ' + (j.app || 'ok'); pintar();
+  } catch (e) {
+    p.ok = false; p.d = 'Conexión normal bloqueada por el navegador (' + String(e && e.message || e) + ')'; pintar();
+    const p2 = paso('Conexión alternativa');
+    try {
+      const j = await jsonpGet(url, { ping: 1 }, 30000);
+      if (!j || !j.ok) throw new Error('sin datos');
+      p2.ok = true; p2.d = 'Funciona: el sistema usará esta conexión en este navegador'; modo = 'jsonp'; pintar();
+    } catch (e2) {
+      p2.ok = false; p2.d = (e2 && (e2.msg || e2.message)) || String(e2); pintar();
+      return fin(false, 'El navegador bloquea la conexión desde este archivo', `Puede ser por dos cosas:<ol style="margin:6px 0 0 18px"><li><b>Code.gs no está actualizado</b> en Apps Script (la conexión alternativa necesita la versión nueva). Pegue el Code.gs nuevo y haga <b>Implementar › Administrar implementaciones › ✏️ › Nueva versión</b>. Luego pruebe otra vez.</li><li>Un bloqueador de anuncios/rastreadores, VPN o antivirus está filtrando a Google. Pruebe con <b>Chrome</b> o <b>Edge</b> sin extensiones.</li></ol>Mientras tanto puede trabajar con el <b>link</b> (/exec): guarda en la computadora y sube solo cuando vuelve el internet.`);
+    }
+  }
+
+  p = paso('Envío de datos y clave de acceso');
+  try {
+    const j = await enviar({ action: 'ping' });
+    if (j.html !== undefined) { p.ok = false; p.d = j.html; pintar(); return fin(false, 'Google respondió con un error del script', 'La implementación no tiene el <b>Code.gs</b> completo o actualizado. Pegue de nuevo Code.gs, guarde y haga <b>Implementar › Administrar implementaciones › ✏️ › Versión: Nueva versión › Implementar</b>.'); }
+    if (j.error === 'AUTH') { p.ok = false; p.d = 'Clave rechazada'; pintar(); return fin(false, 'La clave de acceso no coincide', 'Abra el sistema con el <b>link</b> (/exec), vaya a Configuración › Conexión, copie la <b>Clave de acceso</b> y péguela aquí. Luego pulse Guardar y conectar.'); }
+    if (!j.ok) { p.ok = false; p.d = j.error || 'Error'; pintar(); return fin(false, 'Error del servidor', esc(j.msg || j.error || '')); }
+    p.ok = true; p.d = 'Clave correcta'; pintar();
+  } catch (e) {
+    p.ok = false; p.d = String(e && e.message || e); pintar();
+    return fin(false, 'La lectura funciona pero el envío falla', 'Casi siempre es porque la implementación es una versión vieja o el script lanzó un error. Pegue de nuevo <b>Code.gs</b>, guarde y haga <b>Implementar › Administrar implementaciones › ✏️ › Versión: Nueva versión › Implementar</b>. Si sigue igual, ejecute <b>instalar</b> otra vez desde el editor.');
+  }
+
+  p = paso('Lectura de la información en Drive');
+  try {
+    const j = await enviar({ action: 'init' });
+    if (!j.ok) throw new Error(j.msg || j.error || j.html);
+    p.ok = true; p.d = 'Años en Drive: ' + ((j.data && j.data.years) || []).join(', '); pintar();
+  } catch (e) { p.ok = false; p.d = String(e && e.message || e); pintar(); return fin(false, 'No se pudo leer Drive', 'Ejecute <b>instalar</b> desde el editor de Apps Script y vuelva a implementar con <b>Nueva versión</b>.'); }
+
+  Sync.transport = modo; LS.set('transport', modo);
+  if (url !== Sync.url || token !== Sync.token) { LS.set('apiUrl', url); LS.set('token', token); Sync.configure(); }
+  Sync.lastErr = ''; Sync.online = true;
+  fin(true, 'Conexión correcta', 'Todo funciona. Se sincronizará ahora mismo.');
+  Sync.run(true).then(() => { if (CUR.v === 'cfg:sync') go('cfg:sync'); });
+}
+
+/* Actualización automática y segura de la pantalla cuando llegan datos de otro equipo */
+let remotoPendiente = false, vistaSucia = false;
+function avisoRemoto(on) { if (!on) { vistaSucia = false; remotoPendiente = false; } }
+function aplicarRemoto() {
+  if (!remotoPendiente) return;
+  if (!$('#modal').classList.contains('hidden') || $('#printView').classList.contains('on')) return;
+  const a = document.activeElement; if (a && $('#view').contains(a) && /INPUT|TEXTAREA|SELECT/.test(a.tagName) && !a.closest('.bar')) return;
+  if (vistaSucia) return; // hay cambios sin guardar en esta pantalla: se verá al salir de ella
+  remotoPendiente = false;
+  const y = $('#view').scrollTop;
+  if (curRefresh) curRefresh(); else go(CUR.v, CUR.p);
+  $('#view').scrollTop = y;
+}
+
+/* ---------- CONEXIÓN Y SINCRONIZACIÓN ---------- */
+defView('cfg:sync', 'Conexión y sincronización', el => {
+  const n = Sync.queued();
+  const modoTxt = { gas: 'En línea (Google Apps Script)', http: BOOT.mode === 'web' ? 'Aplicación web (GitHub Pages) conectada a Google' : 'Archivo offline conectado a Google', local: 'Solo local (sin conexión configurada)' }[Sync.mode];
+  el.innerHTML = cfgTabs(el, 'cfg:sync') + `<div class="kpis"><div class="kpi"><div class="l">Modo</div><div class="v" style="font-size:15px">${modoTxt}</div></div><div class="kpi ${navigator.onLine ? 'ok' : 'bad'}"><div class="l">Internet</div><div class="v">${navigator.onLine ? 'Conectado' : 'Sin conexión'}</div></div><div class="kpi ${n ? 'warn' : 'ok'}"><div class="l">Cambios sin subir</div><div class="v">${n}</div></div><div class="kpi"><div class="l">Última sincronización</div><div class="v" style="font-size:16px">${Sync.lastOk ? new Date(Sync.lastOk).toLocaleTimeString() : '—'}</div><div class="s">${esc(Sync.lastErr || '')}</div></div></div>
+  <div class="bar"><button class="btn pri" id="sN">🔄 Sincronizar ahora</button>${INFO.folderUrl ? `<a class="btn" href="${INFO.folderUrl}" target="_blank">📁 Abrir carpeta en Drive</a>` : ''}<button class="btn" id="sB">🗄️ Respaldo en Drive</button><button class="btn" id="sC">🧹 Compactar eliminados</button><button class="btn" id="sT">✉️ Recordatorios por correo</button><span class="sp"></span><button class="btn danger" id="sR">Reiniciar datos de este equipo</button></div>
+  <div class="grid g2">
+    <div class="card"><h3>💻 Trabajar sin internet (versión offline)</h3>
+      <p>La app <b>siempre</b> guarda primero en este equipo y sube los cambios a Drive cuando hay conexión. Si se cae el internet mientras la tiene abierta, siga trabajando normalmente.</p>
+      <p>Para <b>abrir</b> el sistema sin internet, descargue la versión offline: es un archivo .html que guarda en su PC (por ejemplo, en el Escritorio) y abre con Chrome o Edge. Se sincroniza con el mismo Drive cuando vuelve la conexión.</p>
+      ${BOOT.mode === 'gas' ? `<button class="btn pri" id="sO">⬇️ Descargar versión offline</button>` : (BOOT.mode === 'web' ? '<div class="alert info">Está usando la aplicación web: se puede instalar desde el navegador (ícono ⊕ de la barra de direcciones) y abre sin internet.</div>' : '<div class="alert info">Usted está usando la versión offline.</div>')}
+      <p class="muted" style="font-size:12px;margin-top:8px">Requisito: la implementación web debe tener acceso "Cualquier usuario" (ver guía de instalación). Los datos viajan protegidos por la clave de acceso.</p></div>
+    <div class="card"><h3>🔑 Conexión</h3>
+      ${BOOT.mode === 'gas' ? `<label class="f"><span>Clave de acceso (para la versión offline y otros equipos)</span><div class="bar" style="margin:0"><input class="in" readonly value="${esc(INFO.token || '(sincronice para verla)')}" id="sTk"><button class="btn" id="sCp">Copiar</button><button class="btn" id="sNt">Generar nueva</button></div></label>
+        <label class="f" style="margin-top:10px"><span>Otros usuarios con acceso (correos separados por coma)</span><div class="bar" style="margin:0"><input class="in" id="sU" value="${esc(INFO.users || '')}"><button class="btn" id="sUs">Guardar</button></div></label>
+        <p class="muted" style="font-size:12px">Dirección de la app: ${esc(INFO.webAppUrl || '')}</p>`
+      : `<label class="f"><span>URL de la aplicación web (termina en /exec)</span><input class="in" id="sUrl" value="${esc(Sync.url)}"></label><label class="f" style="margin-top:8px"><span>Clave de acceso</span><input class="in" id="sTok" value="${esc(Sync.token)}"></label><div class="bar" style="margin-top:10px"><button class="btn pri" id="sSv">Guardar y conectar</button><button class="btn" id="sDg">🩺 Probar conexión</button></div>`}
+      <label class="f" style="margin-top:10px"><span>Sincronizar automáticamente cada (segundos)</span><input class="in" type="number" id="sE" value="${CFG.sync.cada}" style="width:120px"></label></div></div>`;
+  bindTabs(el);
+  $('#sN', el).onclick = async () => { await Sync.run(true); go('cfg:sync'); };
+  $('#sB', el).onclick = async () => { try { const r = await Sync.call({ action: 'backup' }); toast(`Respaldo creado (${r.files} archivos) · <a href="${r.url}" target="_blank" style="color:#fff">abrir</a>`, 'ok', 8000); } catch (e) { toast('Requiere conexión', 'bad'); } };
+  $('#sC', el).onclick = async () => { if (!(await confirmBox('Borra definitivamente de Drive las filas marcadas como eliminadas (año actual y globales). ¿Continuar?'))) return; try { await Sync.run(); const r = await Sync.call({ action: 'compact', year: Store.year }); toast('Compactado: ' + (Object.entries(r).map(([k, v]) => `${k}: ${v}`).join(', ') || 'nada que borrar'), 'ok', 7000); } catch (e) { toast('Requiere conexión', 'bad'); } };
+  $('#sT', el).onclick = triggersModal;
+  $('#sE', el).onchange = async e => { CFG.sync.cada = Math.max(15, num(e.target.value)); await saveCfg(true); startAutoSync(); };
+  $('#sR', el).onclick = async () => { const n = Sync.queued(); if (!(await confirmBox(`Se borrarán los datos guardados en ESTE equipo y se volverán a descargar de Drive.${n ? ` ⚠ Hay ${n} cambio(s) sin subir que se PERDERÁN.` : ''}`, 'Reiniciar'))) return; await IDB.clearAll(); location.reload(); };
+  const so = $('#sO', el); if (so) so.onclick = async () => { const t = toast('Preparando versión offline…', '', 30000); try { const r = await Sync.call({ action: 'offlineHtml' }); t.remove(); downloadBlob(r.html, 'Suministros_Offline.html', 'text/html'); toast(`Descargada. También quedó una copia en su carpeta de Drive. <a href="${r.url}" target="_blank" style="color:#fff">ver</a>`, 'ok', 9000); } catch (e) { t.remove(); toast('No se pudo generar: ' + (e.error || e), 'bad'); } };
+  const cp = $('#sCp', el); if (cp) cp.onclick = () => { navigator.clipboard && navigator.clipboard.writeText($('#sTk', el).value); toast('Clave copiada'); };
+  const nt = $('#sNt', el); if (nt) nt.onclick = async () => { if (!(await confirmBox('Los equipos con la clave anterior dejarán de sincronizar hasta que ingresen la nueva. ¿Continuar?'))) return; const r = await Sync.call({ action: 'newToken' }); INFO.token = r.token; go('cfg:sync'); };
+  const us = $('#sUs', el); if (us) us.onclick = async () => { await Sync.call({ action: 'users', users: $('#sU', el).value }); INFO.users = $('#sU', el).value; toast('Guardado ✔', 'ok'); };
+  const sv = $('#sSv', el); if (sv) sv.onclick = async () => { LS.set('apiUrl', limpiarUrl($('#sUrl', el).value)); LS.set('token', $('#sTok', el).value.trim()); Sync.configure(); await Sync.run(true); go('cfg:sync'); };
+  const dg = $('#sDg', el); if (dg) dg.onclick = () => diagConexion(limpiarUrl($('#sUrl', el).value), $('#sTok', el).value.trim());
+});
+
+/* ======================= ARRANQUE ======================= */
+let autoTimer = null;
+function startAutoSync() { clearInterval(autoTimer); autoTimer = setInterval(() => { if (Sync.queued() || Date.now() - Sync.lastOk > num(CFG.sync.cada) * 1000) Sync.run(); }, Math.max(15, num(CFG.sync.cada)) * 1000); }
+
+/** Revisa que todos los archivos se hayan copiado completos en Apps Script */
+function revisarArchivos() {
+  const falta = ['AppCore', 'AppModules', 'AppHome', 'AppReports', 'AppOps', 'AppConfig'].filter(f => !(window.__OK || []).includes(f));
+  if (!falta.length) return;
+  const d = document.createElement('div'); d.className = 'alert bad'; d.style.cssText = 'position:fixed;left:50%;top:70px;transform:translateX(-50%);z-index:99;max-width:640px;box-shadow:0 10px 30px rgba(0,0,0,.4)';
+  d.innerHTML = `<b>⚠ El sistema no cargó completo:</b> ${falta.map(f => `<b>${f}</b>`).join(', ')}.<br>En Apps Script, abra ${falta.length > 1 ? 'esos archivos' : 'ese archivo'}, borre todo, vuelva a pegar el contenido completo (debe terminar en <code>&lt;/script&gt;</code>), guarde y haga <b>Implementar › Administrar implementaciones › ✏️ › Nueva versión</b>.${(window.__ERRS || []).length ? `<div style="font-size:12px;margin-top:6px;opacity:.85">Detalle técnico: ${esc(window.__ERRS.join(' · '))}</div>` : ''} <button class="btn sm" style="margin-left:6px">Cerrar</button>`;
+  d.querySelector('button').onclick = () => d.remove(); document.body.appendChild(d);
+}
+/** Primer uso de la aplicación web: pide la dirección de la API (ya puesta) y la clave de acceso de este equipo */
+function bienvenidaWeb() {
+  modal('👋 Conectar este equipo', `<p style="margin-top:0">Para ver y guardar los datos, este equipo necesita conectarse a su sistema en Google. Solo se hace una vez por equipo y navegador.</p>
+    <label class="f"><span>Dirección de la API (Apps Script, termina en /exec)</span><input class="in" id="bwU" value="${esc(Sync.url || BOOT.apiUrl || '')}" placeholder="https://script.google.com/macros/s/…/exec"></label>
+    <label class="f" style="margin-top:8px"><span>Clave de acceso · la ve en el sistema actual en Configuración › Conexión</span><input class="in" id="bwT" value="${esc(Sync.token || '')}" placeholder="Pegue aquí la clave" autocomplete="off"></label>
+    <p class="muted" style="font-size:12px">La clave se guarda solo en este navegador; nunca se publica.</p>`,
+    [{ l: '🩺 Probar conexión', left: 1, fn: () => { diagConexion(limpiarUrl($('#bwU').value), $('#bwT').value.trim()); return false; } }, { l: 'Conectar', pri: 1, fn: () => { const u = limpiarUrl($('#bwU').value), t = $('#bwT').value.trim(); if (!u || !t) { toast('Escriba la dirección y la clave', 'bad'); return false; } LS.set('apiUrl', u); LS.set('token', t); location.reload(); return true; } }], { nofocus: false });
+}
+async function boot() {
+  setTimeout(revisarArchivos, 50);
+  await IDB.open() || toast('Este navegador no permite guardar datos locales; se trabajará solo en memoria.', 'bad', 8000);
+  CFG = deepMerge(DEFAULT_CFG(), (await IDB.get('cfg')) || {});
+  Store.year = Number(await IDB.get('year')) || new Date().getFullYear();
+  if (LS.get('dark', false)) document.documentElement.dataset.theme = 'dark';
+  Sync.configure(); applyTheme();
+  await Store.loadAll();
+  renderMenu(); renderYears();
+  // eventos de la interfaz
+  $('#menu').addEventListener('click', e => {
+    const tg = e.target.closest('[data-tg]'); if (tg) { const mg = tg.parentElement; mg.classList.toggle('open'); LS.set('menuOpen', $$('.mg.open').map(x => x.dataset.g)); return; }
+    const a = e.target.closest('[data-v]'); if (a) go(a.dataset.v);
+  });
+  $('#btnMenu').onclick = () => $('#side').classList.toggle('closed');
+  $('#yearSel').onchange = async e => { if (e.target.value === 'new') { e.target.value = Store.year; go('cfg:anios'); return; } await switchYear(Number(e.target.value)); };
+  $('#sync').onclick = () => Sync.run(true);
+  $('#btnTheme').onclick = () => { LS.set('dark', !LS.get('dark', false)); applyTheme(); };
+  $('#pvPrint').onclick = () => window.print(); $('#pvCols').onclick = () => Print.chooseCols(); $('#pvClose').onclick = () => Print.close(); $('#pvDrive').onclick = () => Print.drive();
+  window.addEventListener('online', () => { Sync.online = true; Sync.updateUI(); Sync.run(); });
+  window.addEventListener('offline', () => { Sync.online = false; Sync.updateUI(); });
+  window.addEventListener('beforeunload', e => { if (Sync.queued() && Sync.mode !== 'local' && navigator.onLine) { Sync.run(); } });
+  /* Cambios que llegan de otro equipo: se muestran solos, sin botones. Si en ese momento está
+     escribiendo, tiene un formulario abierto o cambios sin guardar en la pantalla, se espera a que termine. */
+  Bus.on('remote', () => { remotoPendiente = true; aplicarRemoto(); });
+  Bus.on('remote', () => { NB.badge(); });
+  setInterval(aplicarRemoto, 1500);
+  $('#view').addEventListener('input', e => { if (!e.target.closest('.bar') && !e.target.closest('#lsel') && !e.target.matches('#lq,[data-ck],#lckAll')) vistaSucia = true; });
+  if (window.__SEED && (!(await IDB.all('rows')).length || (window.__SEED.ver && (await IDB.get('seedVer')) !== window.__SEED.ver))) { await IDB.set('seedVer', window.__SEED.ver || ''); await restaurarRespaldo(window.__SEED, true); toast('Datos de demostración cargados (versión ' + (window.__SEED.ver || '') + ')', 'ok', 5000); }
+  { const n = await asignarSeries(false); if (n) toast(`Se asignó serie a ${n} recibo(s) (A: 1–27, resto B)`, 'ok', 6000); }
+  NB.boton(); CALCU.boton();
+  go('home');
+  setInterval(tickClock, 1000); tickClock();
+  setInterval(() => Notif.check(), 20000); setTimeout(() => Notif.check(), 1500);
+  Sync.updateUI();
+  if (BOOT.mode === 'web' && (!Sync.url || !Sync.token)) { bienvenidaWeb(); }
+  if (Sync.mode !== 'local') {
+    try {
+      INFO = await Sync.call({ action: 'init' });
+      Store.years = INFO.years || []; renderYears();
+      if (INFO.config && num(INFO.config._upd) > num(CFG._upd)) { CFG = deepMerge(DEFAULT_CFG(), INFO.config); await IDB.set('cfg', CFG); invalidateFields(); applyTheme(); renderMenu(); go(CUR.v, CUR.p); }
+      else if (!INFO.config) await IDB.set('cfgDirty', true);
+      $('#sideUser').textContent = INFO.email || '';
+    } catch (e) { if (e && e.error === 'AUTH') askToken(); }
+    await Sync.run();
+  }
+  startAutoSync();
+  seedPlantillas();
+}
+document.addEventListener('DOMContentLoaded', boot);
+
+window.__OK = (window.__OK || []).concat('AppConfig');
+</script>

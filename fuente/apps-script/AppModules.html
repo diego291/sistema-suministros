@@ -1,0 +1,759 @@
+<script>
+/* =================================================================
+   DEFINICIÓN DE MÓDULOS (campos, tablas, filtros) Y MENÚ
+   ================================================================= */
+const CALC = new WeakMap(); // valores calculados por fila (saldo, caja, alertas…)
+const cv = (r, k) => (CALC.get(r) || {})[k];
+const RECORDAR = [{ v: '', l: 'Sin aviso' }, { v: 0, l: 'A la hora' }, { v: 5, l: '5 min antes' }, { v: 15, l: '15 min antes' }, { v: 30, l: '30 min antes' }, { v: 60, l: '1 hora antes' }, { v: 120, l: '2 horas antes' }, { v: 1440, l: '1 día antes' }, { v: 2880, l: '2 días antes' }];
+const recLabel = v => (RECORDAR.find(x => String(x.v) === String(v)) || {}).l || '';
+const nextNum = (mod, k) => Store.all(mod).reduce((m, r) => Math.max(m, num(r[k])), 0) + 1;
+const est = { fill: { grado: 'grado', seccion: 'seccion', opcion: 'opcion', nie: 'nie' } };
+
+/* ---------------- ESTUDIANTES ---------------- */
+defMod({
+  key: 'estudiantes', label: 'Estudiantes', scope: 'y',
+  ficha: true,
+  intro: 'Base de estudiantes del año. Puede importarla desde su Excel (Configuración › Importar) pegando las columnas Nombre, NIE, Grado, Sección, Opción, Estado, Responsable, DUI.',
+  fields: [
+    { k: 'nombre', l: 'Nombre del estudiante', t: 'text', req: 1, ph: 'Apellidos, Nombres' },
+    { k: 'nie', l: 'NIE', t: 'text' },
+    { k: 'sexo', l: 'Sexo', t: 'select', o: 'sexo' },
+    { k: 'grado', l: 'Grado', t: 'select', o: 'grados', req: 1 },
+    { k: 'seccion', l: 'Sección', t: 'select', o: 'secciones', req: 1 },
+    { k: 'opcion', l: 'Opción (bachillerato)', t: 'select', o: 'opciones' },
+    { k: 'estado', l: 'Estado', t: 'select', o: 'estados_est', def: 'ACTIVO', badge: v => v === 'RETIRADO' ? 'bad' : v === 'NUEVO' ? 'ok' : v === 'DUPLICADO' ? 'warn' : '' },
+    { k: 'nivel', l: 'Nivel', t: 'calc', fn: r => nivelDe(r.grado) },
+    { k: 'responsable', l: 'Responsable', t: 'text', sec: 'Responsable' },
+    { k: 'dui_resp', l: 'DUI del responsable', t: 'text' },
+    { k: 'telefono', l: 'Teléfono', t: 'text' },
+    { k: 'notas', l: 'Observaciones', t: 'textarea', rows: 2 }
+  ],
+  table: ['nie', 'nombre', 'grado', 'seccion', 'opcion', 'estado', 'responsable'],
+  filters: ['grado', 'seccion', 'opcion', 'estado'], sort: { k: 'nombre', dir: 1 },
+  validate: (r, isNew) => { const n = norm(r.nombre); const d = Store.all('estudiantes').find(x => x._id !== r._id && (norm(x.nombre) === n || (r.nie && x.nie && String(x.nie) === String(r.nie)))); return d ? `?Ya existe un estudiante parecido: ${d.nombre} (${d.grado} ${d.seccion}, NIE ${d.nie || '—'}).` : ''; },
+  actions: [{ l: '🎓 Ficha', t: 'Ver estado de pagos', fn: r => verFicha(r) }, { l: '📄', t: 'Constancia de pagos', fn: r => go('r:constancia', { est: r._id }) }]
+});
+
+/* ---------------- RECIBOS DE INGRESO ---------------- */
+/* Todos los rubros cuentan en cálculos (aunque estén ocultos); "off" solo los oculta al digitar recibos */
+const rubrosOn = () => CFG.rubros;
+const rubrosVisibles = () => CFG.rubros.filter(x => !x.off);
+/** Rubros frecuentes (⭐). Si no se ha marcado ninguno, se toman los 6 más usados del año */
+function rubrosFrecuentes() {
+  const vis = rubrosVisibles(); const fav = vis.filter(x => x.fav); if (fav.length) return fav;
+  const uso = {}; Store.all('recibos').forEach(r => vis.forEach(x => { if (num(r['r_' + x.k])) uso[x.k] = (uso[x.k] || 0) + 1; }));
+  return vis.slice().sort((a, b) => (uso[b.k] || 0) - (uso[a.k] || 0)).slice(0, 6).sort((a, b) => vis.indexOf(a) - vis.indexOf(b));
+}
+defMod({
+  key: 'recibos', label: 'Recibos de ingreso', scope: 'y',
+  fieldsFn: () => [
+    { k: 'serie', l: 'Serie', t: 'select', o: 'series', def: () => CFG.serieDef || 'B', req: 1 },
+    { k: 'numero', l: 'N° de recibo', t: 'number', req: 1, plain: 1 },
+    { k: 'fecha', l: 'Fecha', t: 'date', req: 1, def: today },
+    { k: 'tipo', l: 'Tipo de pagador', t: 'select', o: 'pagador', def: 'Estudiante' },
+    { k: 'nombre', l: 'Nombre', t: 'ref', ref: 'estudiantes', fill: est.fill, idk: 'est_id', req: 1 },
+    { k: 'nie', l: 'NIE', t: 'text' },
+    { k: 'grado', l: 'Grado', t: 'select', o: 'grados' },
+    { k: 'seccion', l: 'Sección', t: 'select', o: 'secciones' },
+    { k: 'opcion', l: 'Opción', t: 'select', o: 'opciones' },
+    { k: 'concepto', l: 'Concepto', t: 'text', wide: 1 },
+    ...rubrosOn().map(rb => ({ k: 'r_' + rb.k, l: rb.l, t: 'money', sec: 'Detalle por rubro', rubro: rb.k })),
+    { k: 'meses_alim', l: 'Meses de alimentos', t: 'number', sec: 'Detalle por rubro' },
+    { k: 'total', l: 'Suma de rubros', t: 'money', sec: 'Totales' },
+    { k: 'pago', l: 'Pago recibido', t: 'money', sec: 'Totales' },
+    { k: 'nulo', l: 'Recibo ANULADO', t: 'check', sec: 'Totales' },
+    { k: 'mes', l: 'Mes', t: 'select', o: 'meses', hide: 1 },
+    { k: 'est_id', l: 'id estudiante', t: 'text', hide: 1 },
+    { k: 'unif', l: 'Detalle de uniformes por talla', t: 'json', hide: 1 },
+    { k: 'obs', l: 'Observaciones', t: 'textarea', rows: 2 }
+  ],
+  table: ['serie', 'numero', 'fecha', 'nombre', 'grado', 'seccion', 'opcion', 'concepto', 'pago', 'nulo'],
+  serieBar: st => `<div class="chips"><span class="chip ${!st.f.serie ? 'on' : ''}" data-serie="">Todas las series</span>${lista('series').map(x => `<span class="chip ${st.f.serie === x ? 'on' : ''}" data-serie="${esc(x)}">Serie ${esc(x)}</span>`).join('')}</div>`,
+  quick: [{ l: '📝 Con observación', fn: r => !!String(r.obs || '').trim() }, { l: '🚫 Anulados', fn: r => isTrue(r.nulo) }, { l: '👕 Con uniformes por talla', fn: r => (r.unif || []).length > 0 }, { l: '⚠ Pago distinto a rubros', fn: r => !isTrue(r.nulo) && Math.abs(num(r.pago) - num(r.total)) > 0.004 }],
+  rowIcon: r => (String(r.obs || '').trim() ? `<span title="Observación: ${esc(r.obs)}" style="cursor:help">📝</span> ` : '') + (isTrue(r.nulo) ? '<span title="Recibo anulado">🚫</span> ' : '') + ((r.unif || []).length ? `<span title="${esc((r.unif || []).map(l => l.cant + ' ' + l.prod + ' T-' + l.talla).join(', '))}">👕</span> ` : ''),
+  filters: ['grado', 'seccion', 'mes', 'tipo'], dateField: 'fecha', sums: ['pago'], sort: { k: 'numero', dir: -1 },
+  rowClass: r => isTrue(r.nulo) ? 'muted' : '', sumFilter: r => !isTrue(r.nulo),
+  beforeSave: r => {
+    r.total = r2(rubrosOn().reduce((s, rb) => s + num(r['r_' + rb.k]), 0));
+    if (r.pago === '' || r.pago === undefined) r.pago = r.total;
+    r.mes = cap(mesDe(r.fecha));
+    if (!r.concepto) r.concepto = conceptoAuto(r);
+  },
+  validate: r => {
+    const dup = Store.all('recibos').find(x => x._id !== r._id && num(x.numero) === num(r.numero) && (x.serie || '') === (r.serie || ''));
+    if (dup) return `?El recibo ${recNum(r)} ya está registrado (${dup.nombre}, ${fdate(dup.fecha)}).`;
+    return '';
+  },
+  ficha: true,
+  onNew: done => openRecibo(null, done), onRow: (r, done) => openRecibo(r, done),
+  listButtons: [{ l: '📊 Control de digitación', fn: () => go('r:control') }]
+});
+
+const recNum = r => (r.serie ? r.serie + '-' : '') + (r.numero ?? '');
+/** Serie que corresponde a un N° según los rangos configurados (ej. A: 1–27); si no cae en ninguno, la serie predeterminada */
+const serieDeNumero = n => { n = num(n); const r = (CFG.seriesRangos || []).find(x => n >= num(x.d) && n <= num(x.h)); return r ? r.s : (CFG.serieDef || 'B'); };
+/** Asigna serie a los recibos que no la tienen (o a todos, si todos=true) */
+async function asignarSeries(todos) {
+  const cambia = Store.all('recibos').filter(r => todos ? (r.serie || '') !== serieDeNumero(r.numero) : !r.serie).map(r => Object.assign({}, r, { serie: serieDeNumero(r.numero) }));
+  if (!cambia.length) return 0;
+  for (let i = 0; i < cambia.length; i += 500) await Store.saveMany('recibos', cambia.slice(i, i + 500));
+  // las ventas enlazadas muestran el N° con serie
+  for (const r of cambia) if ((r.unif || []).length) await syncVentasRecibo(r);
+  return cambia.length;
+}
+const nextNumSerie = s => Store.all('recibos').reduce((m, r) => (r.serie || '') === (s || '') ? Math.max(m, num(r.numero)) : m, 0) + 1;
+function conceptoAuto(r) {
+  const parts = [];
+  const lines = (r.unif || []).filter(l => l.prod && num(l.cant));
+  const lock = new Set(lines.map(l => (prodDe(l.prod) || {}).rubro).filter(Boolean));
+  lines.forEach(l => { const p = prodDe(l.prod); parts.push(`${num(l.cant) > 1 ? num(l.cant) + ' ' : ''}${((p && p.concepto) || l.prod).toUpperCase()}${l.talla && norm(l.talla) !== 'unica' ? ' TALLA ' + l.talla : ''}`); });
+  rubrosOn().forEach(rb => {
+    const v = num(r['r_' + rb.k]); if (!v || lock.has(rb.k)) return;
+    if (rb.meses) { const m = num(r.meses_alim) || (rb.p ? Math.round(v / rb.p) : 0); parts.push(m ? `${m} ${m === 1 ? 'MES' : 'MESES'} DE ${rb.l.toUpperCase()}` : rb.l.toUpperCase()); }
+    else { const q = rb.p ? v / rb.p : 0; parts.push(q && Number.isInteger(r2(q)) && q > 1 ? `${q} ${rb.l.toUpperCase()}` : rb.l.toUpperCase()); }
+  });
+  return parts.join(', ');
+}
+
+/** Formulario rápido de recibo (digitación ágil desde el talonario) */
+/** Fecha sugerida para un recibo nuevo: la última usada HOY (para digitar recibos atrasados en lote); si es otro día, la de hoy */
+function fechaRecDefault() { const x = LS.get('lastFechaRec', null); return x && typeof x === 'object' && x.dia === today() && x.f ? x.f : today(); }
+/** Guarda cambios de un estudiante y los aplica a todos sus recibos (y ventas de uniformes) del año */
+async function actualizarEstudiante(e, v) {
+  await Store.save('estudiantes', Object.assign({}, e, v));
+  return propagarEstudiante(e, v);
+}
+async function propagarEstudiante(e, v) {
+  const viejo = norm(e.nombre), nie0 = String(e.nie || '');
+  const recs = Store.all('recibos').filter(r => r.est_id === e._id || (nie0 && String(r.nie || '') === nie0) || (viejo && norm(r.nombre) === viejo));
+  const cambia = recs.map(r => Object.assign({}, r, { est_id: e._id, nombre: v.nombre ?? r.nombre, nie: v.nie ?? r.nie, grado: v.grado, seccion: v.seccion, opcion: v.opcion }));
+  if (cambia.length) await Store.saveMany('recibos', cambia);
+  const ids = new Set(recs.map(r => r._id));
+  const vs = Store.all('unif_ventas').filter(x => ids.has(x.rec_id)).map(x => Object.assign({}, x, { estudiante: v.nombre ?? x.estudiante, grado: v.grado, seccion: v.seccion }));
+  if (vs.length) await Store.saveMany('unif_ventas', vs);
+  return cambia.length;
+}
+/* Si se edita un estudiante desde su módulo, los cambios también pasan a sus recibos */
+let _estAntes = null;
+setTimeout(() => {
+  const d = MOD.estudiantes; const bs = d.beforeSave, as = d.afterSave;
+  d.beforeSave = r => { _estAntes = r._id ? Object.assign({}, Store.get('estudiantes', r._id)) : null; if (bs) bs(r); };
+  d.afterSave = async (saved, isNew) => { if (as) as(saved, isNew); const o = _estAntes; _estAntes = null; if (!o || isNew) return;
+    if (['nombre', 'nie', 'grado', 'seccion', 'opcion'].some(k => String(o[k] || '') !== String(saved[k] || ''))) { const n = await propagarEstudiante(o, { nombre: saved.nombre, nie: saved.nie, grado: saved.grado, seccion: saved.seccion, opcion: saved.opcion }); if (n) toast(`Cambios aplicados a ${n} recibo(s) del estudiante`, 'ok', 4000); } };
+}, 0);
+function openRecibo(row, done, pre) {
+  const isNew = !row;
+  const serie0 = (row && row.serie) || LS.get('lastSerie', CFG.serieDef || 'B');
+  row = Object.assign({ serie: serie0, numero: nextNumSerie(serie0), fecha: fechaRecDefault(), tipo: 'Estudiante' }, pre || {}, row || {});
+  const rbs = rubrosOn();
+  let lines = (row.unif || []).map(l => Object.assign({}, l));
+  let pagoAuto = row.pago === '' || row.pago === undefined || Math.abs(num(row.pago) - num(row.total)) < 0.005;
+  const html = `<div class="form">
+    <div class="wide rec-top">
+    <label class="f req"><span>Serie</span><select class="in" id="r_serie">${lista('series').map(o => `<option ${o === row.serie ? 'selected' : ''}>${esc(o)}</option>`).join('')}${lista('series').includes(row.serie) ? '' : `<option selected>${esc(row.serie || '')}</option>`}</select></label>
+    <label class="f req"><span>N° de recibo</span><input class="in" type="number" id="r_numero" value="${esc(row.numero)}"></label>
+      <div></div>
+    <label class="f"><span>Tipo de pagador</span><select class="in" id="r_tipo">${lista('pagador').map(o => `<option ${o === row.tipo ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></label>
+    <label class="f"><span>NIE</span><input class="in" id="r_nie" value="${esc(row.nie || '')}"></label>
+      <div></div>
+    <label class="f req"><span>Fecha</span><input class="in" type="date" id="r_fecha" value="${esc(toYMD(row.fecha))}"><small id="r_fchk" style="font-size:11.5px;margin-top:3px"></small></label>
+    </div>
+    <label class="f req wide"><span>Nombre (escriba para buscar en la base de estudiantes)</span><input class="in" id="r_nombre" value="${esc(row.nombre || '')}"></label>
+    <div class="wide" id="r_estc"></div>
+    <div hidden><select class="in" id="r_grado"><option></option>${gradosList().map(o => `<option ${o === row.grado ? 'selected' : ''}>${esc(o)}</option>`).join('')}${row.grado && !gradosList().includes(row.grado) ? `<option selected>${esc(row.grado)}</option>` : ''}</select>
+      <select class="in" id="r_seccion"><option></option>${lista('secciones').map(o => `<option ${o === row.seccion ? 'selected' : ''}>${esc(o)}</option>`).join('')}${row.seccion && !lista('secciones').includes(row.seccion) ? `<option selected>${esc(row.seccion)}</option>` : ''}</select>
+      <select class="in" id="r_opcion"><option></option>${lista('opciones').map(o => `<option ${o === row.opcion ? 'selected' : ''}>${esc(o)}</option>`).join('')}${row.opcion && !lista('opciones').includes(row.opcion) ? `<option selected>${esc(row.opcion)}</option>` : ''}</select></div>
+    <div class="wide" id="r_info"></div>
+    ${productos().length ? `<div class="sec-t">Uniformes, chumpas y camisas · por talla (el precio sale de la configuración)</div><div class="wide" id="r_unif"></div>` : ''}
+    <div class="sec-t">Rubros · cantidad × precio (puede escribir el monto directamente)</div>
+    ${(() => {
+      const celda = rb => { const v = num(row['r_' + rb.k]); const q = rb.meses ? (num(row.meses_alim) || (rb.p && v ? r2(v / rb.p) : '')) : (rb.p && v ? r2(v / rb.p) : '');
+        return `<div class="rub ${v ? 'on' : ''}" data-rk="${rb.k}"><span>${esc(rb.l)}${rb.off ? ' <small class="warn-t" style="display:inline">(oculto)</small>' : ''}<small>${rb.p ? money(rb.p) + ' / ' + esc(rb.u || 'unid.') : 'monto libre'}</small></span>
+        <input class="in" type="number" step="any" data-q placeholder="${rb.meses ? 'meses' : 'cant.'}" value="${q || ''}" ${rb.p ? '' : 'disabled'}><input class="in" type="number" step="any" data-m placeholder="$" value="${v || ''}"></div>`; };
+      const freq = new Set(rubrosFrecuentes().map(x => x.k));
+      const arriba = rbs.filter(rb => freq.has(rb.k) || num(row['r_' + rb.k]));
+      const resto = rbs.filter(rb => !arriba.includes(rb) && !rb.off);
+      const abierto = LS.get('rubMas', false);
+      return `<div class="wide rub-grid">${arriba.map(celda).join('')}</div>
+      ${resto.length ? `<details class="wide rub-mas" id="r_mas" ${abierto ? 'open' : ''}><summary><b>Más rubros (${resto.length})</b> <span class="muted">· ${esc(resto.map(x => x.l).join(' · '))}</span></summary><div class="rub-grid" style="margin-top:8px">${resto.map(celda).join('')}</div></details>` : ''}`;
+    })()}
+    <label class="f wide"><span>Concepto <label class="chk" style="display:inline-flex;font-weight:400"><input type="checkbox" id="r_auto" ${row.concepto && row.concepto !== conceptoAuto(row) ? '' : 'checked'}> automático</label></span><input class="in" id="r_concepto" value="${esc(row.concepto || '')}"></label>
+    <div><span class="muted" style="font-size:12px">SUMA DE RUBROS</span><div class="total-box" id="r_total">$0.00</div></div>
+    <label class="f"><span>Pago recibido (lo que dice el recibo)</span><input class="in" type="number" step="any" id="r_pago" value="${row.pago ?? ''}"></label>
+    <div style="align-self:end"><label class="chk"><input type="checkbox" id="r_nulo" ${isTrue(row.nulo) ? 'checked' : ''}> Recibo ANULADO</label></div>
+    <label class="f wide"><span>📝 Observaciones (el recibo quedará marcado con un ícono)</span><input class="in" id="r_obs" value="${esc(row.obs || '')}"></label>
+  </div>`;
+  const leer = () => {
+    const r = Object.assign({}, row);
+    ['serie', 'numero', 'fecha', 'tipo', 'nie', 'nombre', 'grado', 'seccion', 'opcion', 'concepto', 'obs'].forEach(k => r[k] = $('#r_' + k).value.trim());
+    r.numero = num(r.numero); r.nulo = $('#r_nulo').checked;
+    r.meses_alim = '';
+    $$('.rub').forEach(d => { const rb = rbs.find(x => x.k === d.dataset.rk); const m = $('[data-m]', d).value; r['r_' + rb.k] = m === '' ? '' : num(m); if (rb.meses && m !== '') r.meses_alim = num($('[data-q]', d).value) || (rb.p ? r2(num(m) / rb.p) : ''); });
+    r.unif = lines.filter(l => l.prod && num(l.cant)).map(l => ({ prod: l.prod, talla: l.talla || '', cant: num(l.cant), precio: num(l.precio) }));
+    const porRubro = {}; r.unif.forEach(l => { const rk = (prodDe(l.prod) || {}).rubro; if (rk) porRubro[rk] = r2((porRubro[rk] || 0) + l.cant * l.precio); });
+    for (const rk in porRubro) r['r_' + rk] = porRubro[rk];
+    $$('.rub').forEach(d => { const mi = $('[data-m]', d); if (mi.dataset.lock && !(d.dataset.rk in porRubro)) r['r_' + d.dataset.rk] = ''; });
+    r.total = r2(rbs.reduce((s, rb) => s + num(r['r_' + rb.k]), 0));
+    const p = $('#r_pago').value; r.pago = p === '' ? r.total : num(p);
+    return r;
+  };
+  const drawLines = () => {
+    const host = $('#r_unif'); if (!host) return;
+    const ps = productos();
+    host.innerHTML = `<table class="t items-t"><thead><tr><th>Producto</th><th style="width:110px">Talla</th><th style="width:80px">Cant.</th><th style="width:100px">Precio $</th><th style="width:90px" class="r">Subtotal</th><th></th></tr></thead><tbody>
+      ${lines.map((l, i) => { const p = prodDe(l.prod); return `<tr data-li="${i}"><td><select data-lk="prod"><option value=""></option>${ps.filter(x => !x.sinTallas || x.l === l.prod).map(x => `<option ${x.l === l.prod ? 'selected' : ''}>${esc(x.l)}</option>`).join('')}</select></td>
+        <td><select data-lk="talla">${(p ? p.tallas : []).map(t => { const d = dispTalla(p.l, t.t); return `<option value="${esc(t.t)}" ${norm(t.t) === norm(l.talla) ? 'selected' : ''}>${esc(t.t)}${d === null ? '' : ` (disp. ${d})`}</option>`; }).join('')}</select></td>
+        <td><input type="number" min="0" step="1" data-lk="cant" value="${esc(l.cant)}"></td><td><input type="number" step="any" data-lk="precio" value="${esc(l.precio)}"></td>
+        <td class="num">${money(num(l.cant) * num(l.precio))}</td><td><button type="button" class="btn sm danger" data-ldel="${i}">✕</button></td></tr>`; }).join('') || '<tr><td colspan="6" class="muted">Sin productos por talla. Use “+ Agregar fila”.</td></tr>'}</tbody></table>
+      <div style="margin-top:6px"><button type="button" class="btn sm" id="r_ladd">+ Agregar fila</button> <span class="muted" style="font-size:12px">Cada fila suma al rubro del producto (uniforme deportivo, chumpas…) y se registra en Ventas y entregas.</span></div>`;
+  };
+  const refresh = () => {
+    const r = leer();
+    $('#r_total').textContent = money(r.total);
+    if (pagoAuto && $('#r_pago').value !== '') $('#r_pago').value = r.total ? r.total : '';
+    if ($('#r_auto').checked) $('#r_concepto').value = conceptoAuto(r);
+    $('#r_pago').placeholder = r.total ? r.total.toFixed(2) : '';
+    const lock = new Set(r.unif.map(l => (prodDe(l.prod) || {}).rubro));
+    $$('.rub').forEach(d => {
+      const rk = d.dataset.rk, mi = $('[data-m]', d), qi = $('[data-q]', d);
+      if (lock.has(rk)) { mi.value = r['r_' + rk]; mi.readOnly = true; mi.dataset.lock = '1'; qi.disabled = true; mi.title = 'Calculado con las filas por talla'; }
+      else if (mi.dataset.lock) { mi.value = ''; mi.readOnly = false; delete mi.dataset.lock; qi.disabled = !(rbs.find(x => x.k === rk) || {}).p; mi.title = ''; }
+      d.classList.toggle('on', mi.value !== '');
+    });
+    const mas = $('#r_mas'); if (mas && !mas.open && $$('.rub.on', mas).length) mas.open = true;
+  };
+  const info = () => {
+    const n = norm($('#r_nombre').value), nie = $('#r_nie').value.trim(); if (!n && !nie) { $('#r_info').innerHTML = ''; return; }
+    const prev = Store.all('recibos').filter(x => x._id !== row._id && !isTrue(x.nulo) && ((nie && String(x.nie) === nie) || norm(x.nombre) === n));
+    const ok = Store.all('estudiantes').some(e => norm(e.nombre) === n || (nie && String(e.nie) === nie));
+    const meses = r2(prev.reduce((s, x) => s + mesesAlimDe(x), 0)); const req = mesesRequeridos(today()); const dmx = detalleMeses(meses);
+    $('#r_info').innerHTML = (ok ? '' : `<div class="alert warn" style="margin:0 0 6px">⚠ Este nombre no está en la base de estudiantes (se registrará igual).</div>`) +
+      (prev.length ? `<div class="alert info" style="margin:0">Pagos previos este año: <b>${prev.length}</b> recibo(s) · ${money(prev.reduce((s, x) => s + num(x.pago), 0))} · alimentos: <b>${nfmt(meses)}</b> de ${req} mes(es)${meses + 0.001 < req ? ` <span class="bad-t">(faltan ${nfmt(req - meses)}: ${esc(listaMeses(dmx.pen))})</span>` : ' ✔'} · último: ${fdate(prev.map(x => x.fecha).sort().pop())} · ${esc(prev.slice(-3).map(x => x.concepto).join(' | '))}</div>` : '');
+  };
+  const guardar = async nuevo => {
+    const r = leer();
+    if (!r.numero) { toast('Falta el N° de recibo', 'bad'); return false; }
+    if (!r.nombre && !r.nulo) { toast('Falta el nombre', 'bad'); return false; }
+    const msg = MOD.recibos.validate(r);
+    if (msg && !(await confirmBox(msg.slice(1), 'Guardar de todos modos'))) return false;
+    if (!r.nulo && r.pago !== r.total && r.total && !(await confirmBox(`El pago (${money(r.pago)}) no coincide con la suma de rubros (${money(r.total)}). ¿Guardar así?`, 'Guardar'))) return false;
+    MOD.recibos.beforeSave(r);
+    if (!r.est_id) { const e = Store.all('estudiantes').find(x => (r.nie && String(x.nie) === String(r.nie)) || norm(x.nombre) === norm(r.nombre)); if (e) r.est_id = e._id; }
+    const saved = await Store.save('recibos', r); LS.set('lastFechaRec', { f: r.fecha, dia: today() }); LS.set('lastSerie', r.serie);
+    await syncVentasRecibo(saved);
+    toast(`Recibo ${recNum(r)} guardado ✔`, 'ok', 1500);
+    done && done();
+    if (nuevo) setTimeout(() => openRecibo(null, done), 60);
+    return true;
+  };
+  const btns = [];
+  if (!isNew) btns.push({ l: '🗑️ Eliminar', danger: 1, left: 1, fn: async () => { if (!(await confirmBox('¿Eliminar este recibo?', 'Eliminar'))) return false; await Store.remove('recibos', row._id); await syncVentasRecibo(Object.assign({}, row, { _del: 1 })); done && done(); return true; } });
+  btns.push({ l: 'Cancelar' }, { l: '💾 Guardar', fn: () => guardar(false) }, { l: '💾 Guardar y nuevo (Ctrl+Enter)', pri: 1, fn: () => guardar(true) });
+  const m = modal((isNew ? 'Nuevo recibo de ingreso' : 'Recibo ' + recNum(row)), html, btns, { nofocus: true });
+  const box = $('.mb', m);
+  drawLines();
+  $('#r_serie').addEventListener('change', () => { if (isNew) $('#r_numero').value = nextNumSerie($('#r_serie').value); });
+  const hostL = $('#r_unif');
+  if (hostL) {
+    hostL.addEventListener('change', e => {
+      const tr = e.target.closest('[data-li]'); if (!tr) return; const l = lines[tr.dataset.li], k = e.target.dataset.lk;
+      if (k === 'prod') { l.prod = e.target.value; const p = prodDe(l.prod); l.talla = p && p.tallas[0] ? p.tallas[0].t : ''; const pr = precioDe(l.prod, l.talla); l.precio = pr ? pr.precio : ''; if (!num(l.cant)) l.cant = 1; }
+      else if (k === 'talla') { l.talla = e.target.value; const pr = precioDe(l.prod, l.talla); if (pr) l.precio = pr.precio; }
+      else l[k] = e.target.value;
+      drawLines(); refresh();
+    });
+    hostL.addEventListener('click', e => {
+      if (e.target.id === 'r_ladd') { const p0 = productos()[0]; lines.push({ prod: '', talla: '', cant: 1, precio: '' }); drawLines(); const sels = $$('[data-lk=prod]', hostL); sels[sels.length - 1].focus(); }
+      if (e.target.dataset.ldel !== undefined) { lines.splice(Number(e.target.dataset.ldel), 1); drawLines(); refresh(); }
+    });
+  }
+  /* Grado, sección y opción: se muestran en pequeño; el lápiz edita al estudiante en la base y en todos sus recibos */
+  const estActual = () => { const n = norm($('#r_nombre').value), nie = $('#r_nie').value.trim(); return (row.est_id && Store.get('estudiantes', row.est_id) && norm(Store.get('estudiantes', row.est_id).nombre) === n ? Store.get('estudiantes', row.est_id) : null) || Store.all('estudiantes').find(x => (nie && String(x.nie) === nie) || (n && norm(x.nombre) === n)) || null; };
+  const setSel = (id, v) => { const s = $(id); if (v && ![...s.options].some(o => o.value === v)) s.add(new Option(v, v)); s.value = v || ''; };
+  const pintaEst = (abierto) => {
+    const c = $('#r_estc'); if (!c) return;
+    const e = estActual(), g = $('#r_grado').value, sc = $('#r_seccion').value, op = $('#r_opcion').value;
+    if (!abierto) {
+      if (!$('#r_nombre').value.trim()) { c.innerHTML = ''; return; }
+      const txt = [g, sc ? 'Sección ' + sc : '', op].filter(Boolean).join(' · ') || '<span class="muted">sin grado ni sección</span>';
+      const h = `<div class="est-chip">🎓 <span>${txt.includes('<span') ? txt : esc(txt)}</span>${e ? '' : ' <small class="muted">(no está en la base)</small>'}<button type="button" class="btn sm" id="r_estE" title="${e ? 'Editar estudiante en la base de datos' : 'Asignar grado y sección'}">✏️</button></div>`;
+      if (c.dataset.h === h) return; c.dataset.h = h; c.innerHTML = h;
+      $('#r_estE').onclick = () => pintaEst(true); return;
+    }
+    const sel = (id, arr, v) => `<select class="in" id="${id}"><option></option>${arr.map(o => `<option ${o === v ? 'selected' : ''}>${esc(o)}</option>`).join('')}${v && !arr.includes(v) ? `<option selected>${esc(v)}</option>` : ''}</select>`;
+    c.dataset.h = ''; c.innerHTML = `<div class="est-edit"><b>${e ? '✏️ Editar estudiante (se guarda en la base y en todos sus recibos)' : '✏️ Grado y sección de este recibo'}</b>
+      <div class="form" style="margin-top:8px">${e ? `<label class="f wide"><span>Nombre</span><input class="in" id="ee_nombre" value="${esc(e.nombre)}"></label><label class="f"><span>NIE</span><input class="in" id="ee_nie" value="${esc(e.nie || '')}"></label>` : ''}
+        <label class="f"><span>Grado</span>${sel('ee_grado', gradosList(), e ? e.grado : g)}</label><label class="f"><span>Sección</span>${sel('ee_seccion', lista('secciones'), e ? e.seccion : sc)}</label><label class="f"><span>Opción</span>${sel('ee_opcion', lista('opciones'), e ? e.opcion : op)}</label></div>
+      ${e ? '' : `<label class="chk" style="margin-top:6px"><input type="checkbox" id="ee_add" ${$('#r_tipo').value === 'Estudiante' ? 'checked' : ''}> Agregar a la base de estudiantes</label>`}
+      <div class="bar" style="margin-top:8px"><span class="sp"></span><button type="button" class="btn sm" id="ee_c">Cancelar</button><button type="button" class="btn sm pri" id="ee_s">💾 ${e ? 'Guardar en la base y en sus recibos' : 'Aplicar'}</button></div></div>`;
+    $('#ee_c').onclick = () => pintaEst(false);
+    $('#ee_s').onclick = async () => {
+      const v = { grado: $('#ee_grado').value, seccion: $('#ee_seccion').value, opcion: $('#ee_opcion').value };
+      if (e) {
+        v.nombre = $('#ee_nombre').value.trim() || e.nombre; v.nie = $('#ee_nie').value.trim();
+        const n = await actualizarEstudiante(e, v);
+        $('#r_nombre').value = v.nombre; $('#r_nie').value = v.nie; row.est_id = e._id;
+        toast(`Estudiante actualizado ✔ · ${n} recibo(s) corregidos`, 'ok', 4500);
+      } else if ($('#ee_add').checked && $('#r_nombre').value.trim()) {
+        if (!v.grado || !v.seccion) return toast('Para agregarlo a la base elija grado y sección', 'bad');
+        const ne = await Store.save('estudiantes', Object.assign({ nombre: $('#r_nombre').value.trim(), nie: $('#r_nie').value.trim() }, v)); row.est_id = ne._id;
+        toast('Agregado a la base de estudiantes ✔', 'ok');
+      }
+      setSel('#r_grado', v.grado); setSel('#r_seccion', v.seccion); setSel('#r_opcion', v.opcion); pintaEst(false); info(); refresh();
+    };
+  };
+  attachAC($('#r_nombre'), REF.estudiantes, it => { const e = it.row; $('#r_grado').value = e.grado || ''; $('#r_seccion').value = e.seccion || ''; $('#r_opcion').value = e.opcion || ''; $('#r_nie').value = e.nie || ''; row.est_id = e._id; setSel('#r_grado', e.grado); setSel('#r_seccion', e.seccion); setSel('#r_opcion', e.opcion); pintaEst(false); info(); });
+  box.addEventListener('input', e => {
+    const d = e.target.closest('.rub');
+    if (d && e.target.dataset.q !== undefined) { const rb = rbs.find(x => x.k === d.dataset.rk); const q = e.target.value; $('[data-m]', d).value = q === '' ? '' : r2(num(q) * rb.p); }
+    if (e.target.id === 'r_concepto') $('#r_auto').checked = false;
+    if (e.target.id === 'r_pago') pagoAuto = false;
+    refresh();
+  });
+  $('#r_nombre').addEventListener('change', () => { pintaEst(false); info(); }); $('#r_nie').addEventListener('change', () => {
+    const nie = $('#r_nie').value.trim(); const e = nie && Store.all('estudiantes').find(x => String(x.nie) === nie);
+    if (e) { $('#r_nombre').value = e.nombre; setSel('#r_grado', e.grado); setSel('#r_seccion', e.seccion); setSel('#r_opcion', e.opcion); row.est_id = e._id; }
+    pintaEst(false); info();
+  });
+  box.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); guardar(true).then(ok => ok && closeModal()); } });
+  refresh(); info(); pintaEst(false);
+  const fchk = () => { const f = $('#r_fecha').value, e = $('#r_fchk'); if (!e) return; if (!f) { e.innerHTML = '<b class="bad-t">⚠ Falta la fecha</b>'; return; } const dia = cap(dobj(f).toLocaleDateString('es-SV', { weekday: 'long', day: 'numeric', month: 'long' })); e.innerHTML = f === today() ? `<span class="ok-t">● ${dia} · hoy</span>` : `<b class="warn-t">⚠ ${dia} · NO es la fecha de hoy</b>`; $('#r_fecha').style.outline = f === today() ? '' : '2px solid var(--warn)'; };
+  $('#r_fecha').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey) { e.preventDefault(); $('#r_nombre').focus(); } });
+  $('#r_fecha').addEventListener('input', fchk); $('#r_fecha').addEventListener('change', fchk); fchk();
+  { const mas = $('#r_mas'); if (mas) $('summary', mas).addEventListener('click', () => setTimeout(() => LS.set('rubMas', mas.open), 0)); }
+  setTimeout(() => { const t = isNew ? $('#r_fecha') : $('#r_pago'); t.focus(); }, 50);
+}
+
+/* ---------------- TESORERÍA ---------------- */
+/* ---------------- CUENTAS BANCARIAS ---------------- */
+const cuentaLabel = c => c.alias || [c.banco, c.numero].filter(Boolean).join(' · ');
+const cuentasOpts = () => Store.all('cuentas_banco').filter(c => !isTrue(c.inactiva)).sort((a, b) => num(a.orden) - num(b.orden) || cuentaLabel(a).localeCompare(cuentaLabel(b), 'es')).map(c => ({ v: cuentaLabel(c), l: cuentaLabel(c) + (c.alias && c.numero ? ` (${c.banco || ''} ${c.numero})` : '') }));
+defMod({ key: 'cuentas_banco', label: 'Cuentas bancarias', scope: 'g',
+  intro: 'Registre aquí las cuentas de la institución. Luego podrá elegirlas al registrar depósitos, cheques y movimientos del libro de banco.',
+  fields: [
+  { k: 'alias', l: 'Nombre corto (como se mostrará)', t: 'text', ph: 'Ej. Agrícola · Fondos propios', help: 'vacío = banco + número' },
+  { k: 'banco', l: 'Banco', t: 'select', o: 'bancos', req: 1 }, { k: 'numero', l: 'N° de cuenta', t: 'text', req: 1, plain: 1 },
+  { k: 'tipo', l: 'Tipo de cuenta', t: 'select', o: ['Ahorro', 'Corriente'], def: 'Corriente' }, { k: 'titular', l: 'A nombre de', t: 'text', def: () => 'CDE ' + (CFG.inst.nombre || '') },
+  { k: 'uso', l: 'Uso / fondo', t: 'text', ph: 'Ej. Alimentos, Cafetín, Fondos propios' },
+  { k: 'depositado', l: `Depositado en el año`, t: 'calc', fn: r => money(Store.all('depositos').filter(d => d.cuenta === cuentaLabel(r)).reduce((a, d) => a + num(d.cantidad), 0)) },
+  { k: 'orden', l: 'Orden en la lista', t: 'number' }, { k: 'inactiva', l: 'Cuenta cerrada / no usar', t: 'check' }, { k: 'notas', l: 'Notas', t: 'textarea', rows: 2 }],
+  table: ['alias', 'banco', 'numero', 'tipo', 'uso', 'depositado', 'inactiva'], sort: { k: 'orden', dir: 1 },
+  rowClass: r => isTrue(r.inactiva) ? 'muted' : '',
+  beforeSave: r => { const dup = Store.all('cuentas_banco').find(c => c._id !== r._id && cuentaLabel(c) === cuentaLabel(r)); if (dup) r.alias = (r.alias || cuentaLabel(r)) + ' (2)'; },
+  afterSave: async (saved, isNew) => { /* si cambió el nombre visible, actualizar depósitos/cheques/banco que la usaban */ } });
+/** Campo de cuenta con botón para agregar una nueva sin salir del formulario */
+const campoCuenta = (k, l) => ({ k, l, t: 'select', o: cuentasOpts, help: 'agregue más en Tesorería › Cuentas bancarias' });
+function bindNuevaCuenta(mod, k) {
+  return (box, row, collect, isNew, opts) => {
+    const sel = $('#f_' + k, box); if (!sel) return;
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'btn sm'; b.textContent = '+ Nueva cuenta'; b.style.marginTop = '4px';
+    sel.parentNode.appendChild(b);
+    b.onclick = () => { const datos = Object.assign({}, row, collect()); openForm('cuentas_banco', null, { onDone: c => { if (c) datos[k] = cuentaLabel(c); setTimeout(() => openForm(mod, datos, opts || {}), 60); } }); };
+  };
+}
+defMod({ key: 'depositos', label: 'Depósitos / remesas', fields: [
+  { k: 'fecha', l: 'Fecha', t: 'date', req: 1, def: today }, { k: 'boleta', l: 'N° de boleta / remesa', t: 'text', req: 1 },
+  { k: 'anexo', l: 'Recibos que cubre (ej. 14700-14757)', t: 'text' }, campoCuenta('cuenta', 'Cuenta bancaria'),
+  { k: 'cantidad', l: 'Cantidad depositada', t: 'money', req: 1 }, { k: 'obs', l: 'Observaciones', t: 'textarea', rows: 2 }],
+  table: ['fecha', 'boleta', 'anexo', 'cuenta', 'cantidad', 'obs'], filters: ['cuenta'], dateField: 'fecha', sums: ['cantidad'], sort: { k: 'fecha', dir: -1 },
+  carry: ['fecha', 'cuenta'], onForm: bindNuevaCuenta('depositos', 'cuenta'),
+  summary: rows => { const g = {}; rows.forEach(r => { const c = r.cuenta || 'Sin cuenta'; g[c] = (g[c] || 0) + num(r.cantidad); }); const e = Object.entries(g); return e.length > 1 ? 'Por cuenta: ' + e.map(([c, v]) => `${c} ${money(v)}`).join(' · ') : ''; } });
+
+defMod({ key: 'arrendatarios', label: 'Arrendatarios (cafetines y locales)', scope: 'g', fields: [
+  { k: 'nombre', l: 'Nombre del arrendatario', t: 'text', req: 1 }, { k: 'categoria', l: 'Categoría', t: 'select', o: 'arr_categorias', req: 1, def: 'Cafetín' },
+  { k: 'espacio', l: 'Espacio / local (ej. Cafetín 1, Chalet)', t: 'text' }, { k: 'cuota', l: 'Cuota mensual $', t: 'money', req: 1 },
+  { k: 'inicio', l: 'Inicio del contrato', t: 'date', help: 'mes desde el que se cobra' }, { k: 'fin', l: 'Fin del contrato', t: 'date' },
+  { k: 'dia_pago', l: 'Día límite de pago', t: 'number' }, { k: 'forma', l: 'Forma de pago', t: 'select', o: ['Depósito en banco', 'Efectivo', 'Transferencia'] },
+  { k: 'estado', l: 'Estado', t: 'select', o: ['ACTIVO', 'INACTIVO'], def: 'ACTIVO', badge: v => v === 'ACTIVO' ? 'ok' : 'bad' },
+  { k: 'dui', l: 'DUI', t: 'text' }, { k: 'telefono', l: 'Teléfono', t: 'text' },
+  { k: 'saldo', l: 'Saldo pendiente', t: 'calc', fn: r => money(cv(r, 'saldo')) }, { k: 'notas', l: 'Acuerdos / notas', t: 'textarea', rows: 3 }],
+  table: ['nombre', 'categoria', 'espacio', 'cuota', 'estado', 'saldo', 'telefono'], filters: ['categoria', 'estado'], sort: { k: 'nombre', dir: 1 },
+  prepare: rows => { const ec = estadoCuentaArr(); rows.forEach(r => CALC.set(r, { saldo: (ec[r._id] || {}).saldo || 0 })); },
+  actions: [{ l: '📒 Estado de cuenta', fn: r => go('t:arrcuenta', { id: r._id }) }, { l: '+ Pago', fn: r => openPagoArr({ arr_id: r._id }) }] });
+
+defMod({ key: 'cafetines', label: 'Pagos de arrendamiento', fields: [
+  { k: 'nombre', l: 'Arrendatario', t: 'ref', ref: 'arrendatarios', idk: 'arr_id', fill: { categoria: 'categoria', cantidad: 'cuota', concepto: a => 'Alquiler de ' + String(a.categoria || 'local').toLowerCase() + (a.espacio ? ' (' + a.espacio + ')' : '') }, req: 1 },
+  { k: 'categoria', l: 'Categoría', t: 'select', o: 'arr_categorias', def: 'Cafetín' }, { k: 'concepto', l: 'Concepto', t: 'text', def: 'Alquiler de cafetín' },
+  { k: 'mes', l: 'Mes que cancela', t: 'select', o: 'meses' }, { k: 'recibo', l: 'N° de recibo', t: 'text' },
+  { k: 'fecha_banco', l: 'Fecha en banco', t: 'date' }, { k: 'fecha', l: 'Fecha de recibido', t: 'date', def: today },
+  { k: 'cantidad', l: 'Cantidad', t: 'money', req: 1 }, { k: 'comprobante', l: 'N° de comprobante', t: 'text' }, { k: 'obs', l: 'Observaciones', t: 'textarea', rows: 2 }, { k: 'arr_id', l: 'id arrendatario', t: 'text', hide: 1 }, { k: 'grupo', l: 'Grupo (recibo de varios meses)', t: 'text', hide: 1 }],
+  table: ['nombre', 'categoria', 'concepto', 'mes', 'recibo', 'fecha_banco', 'fecha', 'cantidad', 'comprobante'], filters: ['categoria', 'nombre', 'mes'], dateField: 'fecha', sums: ['cantidad'], sort: { k: 'fecha', dir: -1 },
+  beforeSave: r => { if (!r.arr_id) { const a = Store.all('arrendatarios').find(x => norm(x.nombre) === norm(r.nombre)); if (a) { r.arr_id = a._id; if (!r.categoria) r.categoria = a.categoria; } } },
+  listButtons: [{ l: '📒 Estado de cuenta', fn: () => go('t:arrcuenta') }, { l: '👥 Arrendatarios', fn: () => go('m:arrendatarios') }],
+  onNew: done => openPagoArr({}, done),
+  rowIcon: r => (r.grupo ? `<span title="Recibo ${esc(r.recibo || '')} cubre varios meses">🔗</span> ` : '') + (String(r.obs || '').trim() ? `<span title="${esc(r.obs)}">📝</span> ` : '') });
+
+/** Pago de arrendamiento: un recibo puede cubrir varios meses → se crea un registro por cada mes */
+function openPagoArr(pref, done) {
+  pref = pref || {};
+  let arr = pref.arr_id ? Store.get('arrendatarios', pref.arr_id) : (pref.nombre ? Store.all('arrendatarios').find(a => norm(a.nombre) === norm(pref.nombre)) : null);
+  let sel = new Set(pref.meses || []), montos = {};
+  const pagadoMes = () => { const ec = arr ? (estadoCuentaArr()[arr._id] || null) : null; return ec ? ec.meses : Array(12).fill(0); };
+  const html = `<div class="form">
+    <label class="f wide req"><span>Arrendatario (escriba para buscar)</span><input class="in" id="pa_nombre" value="${esc(arr ? arr.nombre : (pref.nombre || ''))}"></label>
+    <label class="f"><span>Categoría</span><select class="in" id="pa_cat">${lista('arr_categorias').map(c => `<option ${c === ((arr && arr.categoria) || pref.categoria || 'Cafetín') ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></label>
+    <label class="f"><span>Cuota por mes $</span><input class="in" type="number" step="any" id="pa_cuota" value="${esc((arr && arr.cuota) || pref.cantidad || '')}"></label>
+    <label class="f wide"><span>Concepto</span><input class="in" id="pa_conc" value="${esc(pref.concepto || (arr ? 'Alquiler de ' + String(arr.categoria || 'local').toLowerCase() + (arr.espacio ? ' (' + arr.espacio + ')' : '') : 'Alquiler de cafetín'))}"></label>
+    <div class="sec-t">Meses que cancela con este recibo · marque uno o varios</div>
+    <div class="wide"><div class="chips" id="pa_meses"></div><div class="muted" style="font-size:12px;margin-top:6px">✔ = ya pagado · Use “Pendientes” para marcar todos los meses que debe.</div>
+      <div class="bar" style="margin-top:6px"><button type="button" class="btn sm" id="pa_pend">Marcar pendientes</button><button type="button" class="btn sm" id="pa_none">Quitar todos</button></div></div>
+    <div class="wide" id="pa_det"></div>
+    <label class="f"><span>N° de recibo</span><input class="in" id="pa_recibo" value="${esc(pref.recibo || '')}"></label>
+    <label class="f"><span>N° de comprobante / remesa</span><input class="in" id="pa_comp" value="${esc(pref.comprobante || '')}"></label>
+    <label class="f"><span>Fecha en banco</span><input class="in" type="date" id="pa_fb" value="${esc(pref.fecha_banco || '')}"></label>
+    <label class="f"><span>Fecha de recibido</span><input class="in" type="date" id="pa_fr" value="${esc(pref.fecha || today())}"></label>
+    <label class="f wide"><span>📝 Observaciones</span><input class="in" id="pa_obs" value="${esc(pref.obs || '')}"></label></div>`;
+  const draw = () => {
+    const pm = pagadoMes(), cuota = num($('#pa_cuota').value);
+    $('#pa_meses').innerHTML = MESES.map((m, i) => { const pag = pm[i] + 0.004 >= cuota && pm[i] > 0; return `<span class="chip ${sel.has(i + 1) ? 'on' : ''}" data-m="${i + 1}" title="${pm[i] ? 'Pagado: ' + money(pm[i]) : 'Sin pago'}">${pag ? '✔ ' : pm[i] ? '◐ ' : ''}${cap(m).slice(0, 3)}</span>`; }).join('');
+    const ms = [...sel].sort((a, b) => a - b);
+    ms.forEach(m => { if (montos[m] === undefined) montos[m] = cuota; });
+    $('#pa_det').innerHTML = ms.length ? `<table class="t"><thead><tr><th>Mes</th><th class="r">Monto $</th></tr></thead><tbody>${ms.map(m => `<tr><td>${cap(MESES[m - 1])} ${Store.year}</td><td class="r"><input class="in num" type="number" step="any" data-mm="${m}" value="${montos[m]}" style="width:120px"></td></tr>`).join('')}</tbody><tfoot><tr><td>TOTAL DEL RECIBO · ${ms.length} mes(es)</td><td class="num">${money(ms.reduce((t, m) => t + num(montos[m]), 0))}</td></tr></tfoot></table>` : '<div class="alert warn" style="margin:0">Marque al menos un mes.</div>';
+  };
+  const m = modal('Registrar pago de arrendamiento', html, [{ l: 'Cancelar' }, { l: '💾 Guardar pago', pri: 1, fn: async () => {
+    const nombre = $('#pa_nombre').value.trim(); if (!nombre) { toast('Falta el arrendatario', 'bad'); return false; }
+    const ms = [...sel].sort((a, b) => a - b); if (!ms.length) { toast('Marque los meses que cancela', 'bad'); return false; }
+    if (!arr) { arr = Store.all('arrendatarios').find(a => norm(a.nombre) === norm(nombre)); }
+    if (!arr && await confirmBox(`<b>${esc(nombre)}</b> no está en el catálogo de arrendatarios. ¿Agregarlo para llevar su estado de cuenta?`, 'Agregar')) arr = await Store.save('arrendatarios', { nombre, categoria: $('#pa_cat').value, cuota: num($('#pa_cuota').value), estado: 'ACTIVO', inicio: Store.year + '-' + pad2(ms[0]) + '-01' });
+    const pm = pagadoMes(); const ya = ms.filter(x => pm[x - 1] > 0);
+    if (ya.length && !(await confirmBox(`Ya hay pagos registrados en: ${ya.map(x => cap(MESES[x - 1])).join(', ')}. ¿Registrar de todos modos?`, 'Registrar'))) return false;
+    const grupo = ms.length > 1 ? 'g' + uid() : '';
+    const base = { nombre, arr_id: arr ? arr._id : '', categoria: $('#pa_cat').value, concepto: $('#pa_conc').value.trim(), recibo: $('#pa_recibo').value.trim(), comprobante: $('#pa_comp').value.trim(), fecha_banco: $('#pa_fb').value, fecha: $('#pa_fr').value, obs: $('#pa_obs').value.trim(), grupo };
+    await Store.saveMany('cafetines', ms.map(x => Object.assign({}, base, { mes: cap(MESES[x - 1]), cantidad: num(montos[x]) })));
+    toast(`✔ ${ms.length} pago(s) registrado(s) · ${money(ms.reduce((t, x) => t + num(montos[x]), 0))}`, 'ok'); done && done(); return true; } }]);
+  attachAC($('#pa_nombre'), REF.arrendatarios, it => { arr = it.row; $('#pa_cat').value = arr.categoria || 'Cafetín'; $('#pa_cuota').value = arr.cuota || ''; $('#pa_conc').value = 'Alquiler de ' + String(arr.categoria || 'local').toLowerCase() + (arr.espacio ? ' (' + arr.espacio + ')' : ''); montos = {}; draw(); });
+  $('#pa_meses').onclick = e => { const c = e.target.closest('[data-m]'); if (!c) return; const k = Number(c.dataset.m); sel.has(k) ? sel.delete(k) : sel.add(k); draw(); };
+  $('#pa_det').oninput = e => { if (e.target.dataset.mm) { montos[e.target.dataset.mm] = num(e.target.value); const ms = [...sel]; $('#pa_det tfoot .num').textContent = money(ms.reduce((t, x) => t + num(montos[x]), 0)); } };
+  $('#pa_cuota').onchange = () => { montos = {}; draw(); };
+  $('#pa_pend').onclick = () => { if (!arr) return toast('Elija primero el arrendatario', 'bad'); const ec = estadoCuentaArr()[arr._id]; sel = new Set(ec ? ec.pend : []); if (!sel.size) toast('No tiene meses pendientes a la fecha'); draw(); };
+  $('#pa_none').onclick = () => { sel = new Set(); draw(); };
+  draw();
+}
+
+defMod({ key: 'donaciones', label: 'Donaciones económicas', fields: [
+  { k: 'nombre', l: 'Donante', t: 'text', req: 1 }, { k: 'concepto', l: 'Concepto', t: 'text' }, { k: 'fecha', l: 'Fecha', t: 'date', def: today },
+  { k: 'recibo', l: 'N° de recibo', t: 'text' }, { k: 'cantidad', l: 'Cantidad', t: 'money', req: 1 }, { k: 'obs', l: 'Observaciones', t: 'textarea', rows: 2 }],
+  table: ['fecha', 'nombre', 'concepto', 'recibo', 'cantidad'], dateField: 'fecha', sums: ['cantidad'], sort: { k: 'fecha', dir: -1 } });
+
+defMod({ key: 'devoluciones', label: 'Devoluciones', fields: [
+  { k: 'recibo', l: 'N° de recibo', t: 'text' }, { k: 'nombre', l: 'Nombre', t: 'ref', ref: 'estudiantes', fill: est.fill, req: 1 },
+  { k: 'grado', l: 'Grado', t: 'select', o: 'grados' }, { k: 'seccion', l: 'Sección', t: 'select', o: 'secciones' }, { k: 'opcion', l: 'Opción', t: 'select', o: 'opciones' },
+  { k: 'concepto', l: 'Concepto', t: 'text' }, { k: 'fecha', l: 'Fecha', t: 'date', def: today }, { k: 'cantidad', l: 'Cantidad a devolver', t: 'money', req: 1 },
+  { k: 'motivo', l: 'Motivo', t: 'textarea', rows: 2 }, { k: 'anulado', l: '¿Recibo anulado?', t: 'check' }],
+  table: ['fecha', 'recibo', 'nombre', 'grado', 'seccion', 'concepto', 'cantidad', 'anulado'], dateField: 'fecha', sums: ['cantidad'], sort: { k: 'fecha', dir: -1 } });
+
+defMod({ key: 'noremesado', label: 'Dinero no remesado', fields: [
+  { k: 'fecha', l: 'Fecha', t: 'date', def: today }, { k: 'concepto', l: 'Concepto', t: 'text', req: 1 },
+  { k: 'cheque', l: 'N° de cheque', t: 'text' }, { k: 'monto', l: 'Monto', t: 'money', req: 1 }, { k: 'obs', l: 'Observaciones', t: 'textarea', rows: 2 }],
+  table: ['fecha', 'concepto', 'cheque', 'monto', 'obs'], dateField: 'fecha', sums: ['monto'], sort: { k: 'fecha', dir: -1 } });
+
+defMod({ key: 'banco', label: 'Libro de banco', fields: [
+  { k: 'fecha', l: 'Fecha', t: 'date', req: 1, def: today }, { k: 'movimiento', l: 'Movimiento', t: 'select', o: ['Depósito', 'Pago', 'Cheque', 'Nota de abono', 'Nota de cargo', 'Saldo inicial'] },
+  { k: 'descripcion', l: 'Descripción', t: 'text', req: 1 }, { k: 'numero', l: 'N° documento', t: 'text' }, campoCuenta('cuenta', 'Cuenta bancaria'),
+  { k: 'debe', l: 'Debe (+)', t: 'money' }, { k: 'haber', l: 'Haber (−)', t: 'money' },
+  { k: 'saldo', l: 'Saldo', t: 'calc', fn: r => money(cv(r, 'saldo')) }],
+  table: ['fecha', 'cuenta', 'movimiento', 'descripcion', 'numero', 'debe', 'haber', 'saldo'], filters: ['cuenta', 'movimiento'], onForm: bindNuevaCuenta('banco', 'cuenta'), dateField: 'fecha', sums: ['debe', 'haber'], sort: { k: 'fecha', dir: -1 },
+  prepare: rows => { const s = {}; rows.slice().sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)) || num(a._upd) - num(b._upd)).forEach(r => { const c = r.cuenta || ''; s[c] = r2((s[c] || 0) + num(r.debe) - num(r.haber)); CALC.set(r, { saldo: s[c] }); }); },
+  summary: () => { const g = {}; Store.all('banco').forEach(r => { const c = r.cuenta || 'Sin cuenta'; g[c] = r2((g[c] || 0) + num(r.debe) - num(r.haber)); }); const e = Object.entries(g); return e.length > 1 ? 'Saldo por cuenta: ' + e.map(([c, v]) => `${c} ${money(v)}`).join(' · ') : 'Saldo actual: ' + money(e.length ? e[0][1] : 0); } });
+
+defMod({ key: 'arqueos', label: 'Historial de arqueos', fields: [
+  { k: 'fecha', l: 'Fecha', t: 'date', def: today }, { k: 'caja', l: 'Caja', t: 'select', o: ['GENERAL', 'CAJA CHICA'] },
+  { k: 'contado', l: 'Efectivo contado', t: 'money' }, { k: 'esperado', l: 'Efectivo que debe haber', t: 'money' }, { k: 'diferencia', l: 'Diferencia', t: 'money' },
+  { k: 'resultado', l: 'Resultado', t: 'text', badge: v => /CUADRA/.test(v) ? 'ok' : 'bad' }, { k: 'conteo', l: 'Conteo', t: 'text', hide: 1 }, { k: 'snap', l: 'Totales al momento del arqueo', t: 'text', hide: 1 }, { k: 'notas', l: 'Notas', t: 'textarea' }],
+  table: ['fecha', 'caja', 'contado', 'esperado', 'diferencia', 'resultado', 'notas'], filters: ['caja'], dateField: 'fecha', sort: { k: 'fecha', dir: -1 }, noNew: 1,
+  onRow: r => go(r.caja === 'CAJA CHICA' ? 'c:arqueo' : 't:arqueo', { caja: r.caja, id: r._id }), listButtons: [{ l: '+ Nuevo arqueo', fn: () => go('t:arqueo') }] });
+
+/* ---------------- CAJA CHICA ---------------- */
+let _ordSeq = 0;
+const nuevoOrden = () => Date.now() + (++_ordSeq % 1000) / 1000;
+/** Calcula saldo, N° de caja y alertas en el orden de registro (igual que su libro de caja chica).
+    Inicia caja nueva: tipo INICIO/REPOSICIÓN o un ingreso (Debe) con comprobante CHEQUE. */
+function prepCaja(rows) {
+  const lim = num(CFG.caja.limite);
+  let s = 0, caja = 0, rcs = {};
+  rows.slice().sort((a, b) => (num(a.orden) || num(a._upd)) - (num(b.orden) || num(b._upd))).forEach(r => {
+    const nueva = r.tipo === 'INICIO' || r.tipo === 'REPOSICIÓN' || (num(r.debe) > 0 && /CHEQUE/i.test(r.comprobante || ''));
+    if (nueva || caja === 0) caja++;
+    s = r2(s + num(r.debe) - num(r.haber));
+    const al = [];
+    if (num(r.haber) > lim && lim) al.push('Excede límite');
+    if (!r.documento && num(r.haber)) al.push('Sin N° doc.');
+    if (!r.proveedor && num(r.haber)) al.push('Sin proveedor');
+    if (!r.fecha) al.push('Sin fecha');
+    else if (toYMD(r.fecha) > today()) al.push('Fecha futura');
+    if (s < 0) al.push('Saldo negativo');
+    if (r.documento && num(r.haber)) { const k = norm(r.documento); if (rcs[k]) al.push('Doc. repetido'); rcs[k] = 1; }
+    CALC.set(r, { saldo: s, caja: 'C' + caja, cajaN: caja, alertas: al.join(' · ') });
+  });
+  return { saldo: s, caja: Math.max(1, caja) };
+}
+defMod({ key: 'cajachica', label: 'Registro de caja chica', fields: [
+  { k: 'fecha', l: 'Fecha', t: 'date', def: today }, { k: 'tipo', l: 'Tipo', t: 'select', o: 'cc_tipos', def: 'GASTO', req: 1, help: 'REPOSICIÓN = cheque que repone el fondo (inicia caja nueva)' },
+  { k: 'categoria', l: 'Categoría', t: 'select', o: 'cc_categorias' }, { k: 'comprobante', l: 'Comprobante', t: 'select', o: 'cc_comprobantes' },
+  { k: 'documento', l: 'N° de documento', t: 'text' }, { k: 'concepto', l: 'Concepto', t: 'text', req: 1, wide: 1 },
+  { k: 'proveedor', l: 'Proveedor / nombre', t: 'ref', ref: 'proveedores' },
+  { k: 'debe', l: 'Debe (+) ingreso', t: 'money' }, { k: 'haber', l: 'Haber (−) gasto', t: 'money' },
+  { k: 'caja', l: 'N° caja', t: 'calc', fn: r => cv(r, 'caja') || '' }, { k: 'saldo', l: 'Saldo', t: 'calc', fn: r => cv(r, 'saldo') === undefined ? '' : money(cv(r, 'saldo')) },
+  { k: 'alertas', l: 'Alertas', t: 'calc', fn: r => cv(r, 'alertas') || '' }, { k: 'notas', l: 'Notas', t: 'textarea', rows: 2 },
+  { k: 'orden', l: 'Orden de registro', t: 'number', hide: 1 }, { k: 'rc', l: 'Datos del recibo', t: 'text', hide: 1 }],
+  table: ['fecha', 'caja', 'tipo', 'categoria', 'comprobante', 'documento', 'concepto', 'proveedor', 'debe', 'haber', 'saldo', 'alertas'],
+  filters: ['tipo', 'categoria', 'comprobante'], dateField: 'fecha', sums: ['debe', 'haber'], sort: { k: 'orden', dir: -1 },
+  carry: ['fecha', 'tipo', 'categoria', 'comprobante'], prepare: prepCaja, rowClass: r => cv(r, 'alertas') ? 'warn-t' : '', beforeSave: r => { if (!num(r.orden)) r.orden = nuevoOrden(); },
+  validate: r => num(r.haber) > num(CFG.caja.limite) && CFG.caja.limite ? `?El gasto (${money(r.haber)}) excede el límite por compra de ${money(CFG.caja.limite)}.` : '',
+  summary: () => { const x = prepCaja(Store.all('cajachica')); return `Saldo en caja: ${money(x.saldo)} · Caja actual: C${x.caja}`; },
+  actions: [{ l: '🧾 Generar recibo', t: 'Imprimir el recibo de este gasto', show: r => typeof esReciboRC === 'function' && esReciboRC(r), fn: r => imprimirReciboRC(r) }],
+  listButtons: [{ l: '📊 Panel', fn: () => go('c:panel') }, { l: '🧾 Nuevo recibo', fn: () => go('c:recibo') }] });
+
+defMod({ key: 'proveedores', label: 'Directorio de proveedores', scope: 'g', fields: [
+  { k: 'nombre', l: 'Nombre / razón social', t: 'text', req: 1 }, { k: 'comercial', l: 'Nombre comercial', t: 'text' },
+  { k: 'dui_nit', l: 'N° DUI o NIT', t: 'text' }, { k: 'fecha_emision', l: 'Fecha emisión DUI/NIT', t: 'date' }, { k: 'nrc', l: 'NRC', t: 'text' },
+  { k: 'direccion', l: 'Dirección', t: 'text', wide: 1 }, { k: 'telefono', l: 'Teléfono', t: 'text' }, { k: 'email', l: 'Correo', t: 'text' },
+  { k: 'giro', l: 'Giro / rubro', t: 'text' }, { k: 'historico', l: 'Comprado este año', t: 'calc', fn: r => money(cv(r, 'tot')) },
+  { k: 'compras', l: 'N° compras', t: 'calc', fn: r => cv(r, 'n') || 0 }, { k: 'notas', l: 'Notas', t: 'textarea', rows: 2 }],
+  table: ['nombre', 'dui_nit', 'telefono', 'giro', 'historico', 'compras'], sort: { k: 'nombre', dir: 1 },
+  prepare: rows => { const m = {}; Store.all('cajachica').forEach(r => { const k = norm(r.proveedor); if (!k || !num(r.haber)) return; (m[k] = m[k] || { tot: 0, n: 0 }); m[k].tot += num(r.haber); m[k].n++; }); Store.all('compras').forEach(r => { const k = norm(r.proveedor); if (!k || r.estado === 'ANULADO') return; (m[k] = m[k] || { tot: 0, n: 0 }); m[k].tot += num(r.total); m[k].n++; }); rows.forEach(r => CALC.set(r, m[norm(r.nombre)] || { tot: 0, n: 0 })); } });
+
+/* ---------------- COMPRAS ---------------- */
+defMod({ key: 'compras', label: 'Procesos de compra', fields: [
+  { k: 'numero', l: 'N° de proceso', t: 'number', req: 1, plain: 1 }, { k: 'estado', l: 'Estado', t: 'select', o: 'compra_estados', def: '1 SOLICITUD', badge: v => /PAGADO|RECIBIDO/.test(v) ? 'ok' : v === 'ANULADO' ? 'bad' : 'warn' },
+  { k: 'fondo', l: 'Fuente de fondos', t: 'select', o: 'fondos' },
+  { k: 'proveedor', l: 'Proveedor', t: 'ref', ref: 'proveedores', fill: { proveedor_com: 'comercial' } }, { k: 'proveedor_com', l: 'Nombre comercial (opcional)', t: 'text' },
+  { k: 'items', l: 'Detalle de bienes / servicios', t: 'items', sec: 'Detalle' },
+  { k: 'fecha_sol', l: 'Fecha de la solicitud', t: 'date', def: today, sec: 'Solicitud de cotización' }, { k: 'fecha_limite', l: 'Fecha límite para cotizar', t: 'date' },
+  { k: 'plazo', l: '1. Plazo de entrega', t: 'text', def: '5 días hábiles.' }, { k: 'lugar', l: '2. Lugar de entrega', t: 'text', def: 'Centro Educativo' },
+  { k: 'vigencia', l: '3. Vigencia de la cotización', t: 'text', def: '5 días hábiles.' }, { k: 'garantia', l: '4. Tiempo de garantía', t: 'text' },
+  { k: 'n_orden', l: 'N° de orden', t: 'text', sec: 'Orden de compra' }, { k: 'fecha_orden', l: 'Fecha de la orden', t: 'date' }, { k: 'obs_orden', l: 'Observaciones de la orden', t: 'text', wide: 1 },
+  { k: 'n_acta', l: 'N° de acta', t: 'text', sec: 'Acta de recepción' }, { k: 'fecha_rec', l: 'Fecha de recepción', t: 'date' }, { k: 'obs_rec', l: 'Observaciones de la recepción', t: 'text', wide: 1 },
+  { k: 'factura', l: 'N° factura / CCF', t: 'text', sec: 'Pago' }, { k: 'cheque', l: 'N° de cheque', t: 'text' }, { k: 'fecha_pago', l: 'Fecha de pago', t: 'date' },
+  { k: 'total', l: 'Total', t: 'money', hide: 1 }, { k: 'resumen', l: 'Resumen', t: 'calc', fn: r => (r.items || []).map(x => x.desc).join(', ').slice(0, 80) }],
+  table: ['numero', 'fecha_sol', 'proveedor', 'resumen', 'total', 'estado', 'cheque'], filters: ['estado', 'fondo'], dateField: 'fecha_sol', sums: ['total'], sort: { k: 'numero', dir: -1 },
+  defaults: () => ({ numero: nextNum('compras', 'numero') }),
+  beforeSave: r => { r.total = itemsTotal(r.items); },
+  actions: [{ l: 'Cotiz.', t: 'Solicitud de cotización', fn: r => printCompra(r, 'cot') }, { l: 'Orden', t: 'Orden de compra', fn: r => printCompra(r, 'oc') }, { l: 'Acta', t: 'Acta de recepción', fn: r => printCompra(r, 'acta') }, { l: '3 en 1', t: 'Los tres formatos', fn: r => printCompra(r, 'todo') }],
+  formActions: [{ l: '🖨️ Imprimir formatos', fn: r => { r.total = itemsTotal(r.items); printCompra(r, 'todo'); } }, { l: '💵 Crear voucher', fn: r => { r.total = itemsTotal(r.items); openForm('cheques', { beneficiario: r.proveedor, concepto: 'Pago de ' + (r.items || []).map(x => x.desc).join(', ').slice(0, 160), monto: r.total, compra: String(r.numero), numero: r.cheque || '' }); } }] });
+
+defMod({ key: 'cheques', label: 'Cheques y vouchers', fields: [
+  { k: 'numero', l: 'N° de cheque', t: 'text', req: 1 }, { k: 'fecha', l: 'Fecha', t: 'date', def: today, req: 1 },
+  { k: 'beneficiario', l: 'Beneficiario (páguese a)', t: 'ref', ref: 'proveedores', fill: { dui: 'dui_nit' }, req: 1 }, { k: 'dui', l: 'DUI/NIT del beneficiario', t: 'text' },
+  { k: 'concepto', l: 'Por el pago de', t: 'textarea', rows: 2, req: 1 }, { k: 'monto', l: 'Monto', t: 'money', req: 1 },
+  campoCuenta('banco', 'Cuenta bancaria'), { k: 'compra', l: 'N° proceso de compra', t: 'text' },
+  { k: 'estado', l: 'Estado', t: 'select', o: ['EMITIDO', 'ENTREGADO', 'COBRADO', 'ANULADO'], def: 'EMITIDO' }, { k: 'letras', l: 'En letras', t: 'calc', fn: r => numLetras(r.monto), wide: 1 }],
+  table: ['numero', 'fecha', 'beneficiario', 'concepto', 'monto', 'estado'], filters: ['estado'], dateField: 'fecha', sums: ['monto'], sort: { k: 'fecha', dir: -1 },
+  onForm: bindNuevaCuenta('cheques', 'banco'), actions: [{ l: '🖨️ Voucher', fn: r => printVoucher(r) }], formActions: [{ l: '🖨️ Imprimir voucher', fn: r => printVoucher(r) }] });
+
+/* ---------------- BODEGA ---------------- */
+defMod({ key: 'articulos', label: 'Catálogo de artículos', scope: 'g', fields: [
+  { k: 'codigo', l: 'Código', t: 'text' }, { k: 'nombre', l: 'Artículo / descripción', t: 'text', req: 1 },
+  { k: 'categoria', l: 'Categoría', t: 'select', o: 'bod_categorias' }, { k: 'unidad', l: 'Unidad de medida', t: 'select', o: 'unidades', def: 'Unidad' },
+  { k: 'stock_min', l: 'Existencia mínima', t: 'number' }, { k: 'ubicacion', l: 'Ubicación', t: 'text' },
+  { k: 'existencia', l: 'Existencia actual', t: 'calc', fn: r => nfmt(cv(r, 'ex')) }, { k: 'notas', l: 'Notas', t: 'textarea', rows: 2 }],
+  table: ['codigo', 'nombre', 'categoria', 'unidad', 'existencia', 'stock_min', 'ubicacion'], filters: ['categoria'], sort: { k: 'nombre', dir: 1 },
+  prepare: rows => { const ex = existencias(); rows.forEach(r => CALC.set(r, { ex: (ex[r._id] || {}).disp || 0 })); },
+  beforeSave: r => { if (!r.codigo) { const pre = (r.categoria || 'ART').slice(0, 3).toUpperCase(); const usados = new Set(Store.all('articulos').map(a => a.codigo)); let n = Store.all('articulos').filter(a => String(a.codigo || '').startsWith(pre)).length + 1; while (usados.has(pre + '-' + String(n).padStart(3, '0'))) n++; r.codigo = pre + '-' + String(n).padStart(3, '0'); } } });
+
+const esEntrada = t => /^ENTRADA/.test(t || '');
+const esPrestamo = t => t === 'PRÉSTAMO';
+defMod({ key: 'movimientos', label: 'Movimientos de bodega', fields: [
+  { k: 'fecha', l: 'Fecha', t: 'date', req: 1, def: today }, { k: 'tipo', l: 'Tipo de movimiento', t: 'select', o: 'bod_tipos', req: 1, def: 'SALIDA - DOCENTE' },
+  { k: 'articulo', l: 'Artículo', t: 'ref', ref: 'articulos', fill: { unidad: 'unidad' }, idk: 'art_id', req: 1 },
+  { k: 'cantidad', l: 'Cantidad', t: 'number', req: 1 }, { k: 'unidad', l: 'Unidad', t: 'select', o: 'unidades' },
+  { k: 'persona', l: 'Persona (recibe / entrega / retira)', t: 'ref', ref: 'personal', idk: 'per_id' },
+  { k: 'marca', l: 'Marca / presentación', t: 'text' }, { k: 'documento', l: 'Documento (factura, acta, donación)', t: 'text' },
+  { k: 'f_devolucion', l: 'Devolver antes de', t: 'date', sec: 'Solo préstamos' }, { k: 'devuelto', l: 'Ya fue devuelto', t: 'check' }, { k: 'f_devuelto', l: 'Fecha de devolución', t: 'date' },
+  { k: 'obs', l: 'Observación', t: 'textarea', rows: 2 }, { k: 'art_id', l: 'id', t: 'text', hide: 1 }, { k: 'per_id', l: 'id', t: 'text', hide: 1 }],
+  table: ['fecha', 'tipo', 'articulo', 'cantidad', 'unidad', 'persona', 'documento', 'devuelto'], filters: ['tipo', 'persona'], dateField: 'fecha', sort: { k: 'fecha', dir: -1 },
+  rowClass: r => esEntrada(r.tipo) ? 'ok-t' : esPrestamo(r.tipo) && !isTrue(r.devuelto) ? 'warn-t' : '',
+  beforeSave: r => { if (!r.art_id) { const a = Store.all('articulos').find(x => norm(x.nombre) === norm(r.articulo)); if (a) r.art_id = a._id; } if (isTrue(r.devuelto) && !r.f_devuelto) r.f_devuelto = today(); },
+  afterSave: async r => { if (!r.art_id && r.articulo) { const na = { nombre: r.articulo, unidad: r.unidad || 'Unidad', categoria: /ENTRADA - DONACI|LIMPIEZA/.test(r.tipo) ? 'Limpieza' : 'Otro' }; MOD.articulos.beforeSave(na); const a = await Store.save('articulos', na); await Store.save('movimientos', Object.assign({}, r, { art_id: a._id })); toast('Artículo nuevo agregado al catálogo'); } },
+  validate: r => { if (esEntrada(r.tipo)) return ''; const ex = existencias(); const a = Store.all('articulos').find(x => x._id === r.art_id || norm(x.nombre) === norm(r.articulo)); if (!a) return ''; const prev = r._id ? Store.get('movimientos', r._id) : null; const disp = ((ex[a._id] || {}).disp || 0) + (prev && !esEntrada(prev.tipo) && !(esPrestamo(prev.tipo) && isTrue(prev.devuelto)) ? num(prev.cantidad) : 0); return num(r.cantidad) > disp ? `?Solo hay ${nfmt(disp)} ${a.unidad || ''} de "${a.nombre}" en existencia.` : ''; } });
+
+/** Existencias por artículo (año actual) */
+function existencias() {
+  const ex = {};
+  const byName = {}; Store.all('articulos').forEach(a => { byName[norm(a.nombre)] = a._id; ex[a._id] = { ent: 0, sal: 0, pres: 0, disp: 0 }; });
+  Store.all('movimientos').forEach(m => {
+    const id = m.art_id && ex[m.art_id] ? m.art_id : byName[norm(m.articulo)]; if (!id) return;
+    const e = ex[id], q = num(m.cantidad);
+    if (esEntrada(m.tipo)) e.ent += q; else if (esPrestamo(m.tipo)) { if (!isTrue(m.devuelto)) e.pres += q; } else e.sal += q;
+  });
+  for (const id in ex) ex[id].disp = r2(ex[id].ent - ex[id].sal - ex[id].pres);
+  return ex;
+}
+
+defMod({ key: 'personal', label: 'Personal y docentes', scope: 'g', fields: [
+  { k: 'codigo', l: 'Código', t: 'text', help: 'se genera solo' }, { k: 'nombre', l: 'Nombre (APELLIDOS, NOMBRES)', t: 'text', req: 1 },
+  { k: 'estado', l: 'Estado', t: 'select', o: 'personal_estados', def: 'ACTIVO', badge: v => v === 'ACTIVO' ? 'ok' : 'bad' },
+  { k: 'cargo', l: 'Cargo', t: 'text' }, { k: 'nip', l: 'NIP', t: 'text' }, { k: 'dui', l: 'DUI', t: 'text' },
+  { k: 'telefono', l: 'Teléfono', t: 'text' }, { k: 'email', l: 'Correo', t: 'text' }, { k: 'contrato', l: 'Tipo de contrato', t: 'text' }, { k: 'notas', l: 'Notas', t: 'textarea', rows: 2 }],
+  table: ['codigo', 'nombre', 'estado', 'cargo', 'nip', 'telefono'], filters: ['estado', 'cargo'], sort: { k: 'nombre', dir: 1 },
+  beforeSave: r => { if (!r.codigo) { const ap = String(r.nombre).split(',')[0].trim().split(/\s+/).filter(w => !/^(de|del|la|los)$/i.test(w)); const ini = ap.slice(0, 2).map(w => w[0]).join('').toUpperCase(); const usados = new Set(Store.all('personal').map(p => p.codigo)); let n = Store.all('personal').length + 1; while (usados.has(ini + String(n).padStart(2, '0'))) n++; r.codigo = ini + String(n).padStart(2, '0'); } },
+  actions: [{ l: '📄 Hoja', t: 'Hoja individual de material', fn: r => printHojaDocente(r) }] });
+
+/* ---------------- UNIFORMES Y VENTAS ---------------- */
+defMod({ key: 'unif_precios', label: 'Lista de precios', scope: 'g', fields: [
+  { k: 'producto', l: 'Producto', t: 'select', o: 'unif_tipos', req: 1 }, { k: 'tallas', l: 'Tallas (separe con -)', t: 'text', req: 1, ph: '4-6-8-10-12' },
+  { k: 'costo', l: 'Costo', t: 'money', req: 1 }, { k: 'precio', l: 'Precio de venta', t: 'money', req: 1 },
+  { k: 'ganancia', l: 'Ganancia', t: 'calc', fn: r => money(num(r.precio) - num(r.costo)) }, { k: 'margen', l: 'Margen', t: 'calc', fn: r => pct(num(r.precio) - num(r.costo), num(r.precio)) }],
+  table: ['producto', 'tallas', 'costo', 'precio', 'ganancia', 'margen'], filters: ['producto'], sort: { k: 'producto', dir: 1 } });
+const productos = () => (CFG.productos || []);
+const prodDe = n => productos().find(p => norm(p.l) === norm(n)) || null;
+const unifTipos = () => productos().length ? productos().map(p => p.l) : lista('unif_tipos');
+const tallasTodas = () => [...new Set([...lista('tallas'), ...productos().flatMap(p => p.tallas.map(t => t.t))])];
+/** Costo y precio de un producto en una talla (Configuración › Uniformes: productos y tallas) */
+function precioDe(producto, talla) {
+  const p = prodDe(producto);
+  if (p) { const t = p.tallas.find(x => norm(x.t) === norm(talla)) || (p.tallas.length === 1 ? p.tallas[0] : null); if (t) return { costo: num(t.c), precio: num(t.p) }; }
+  const x = Store.all('unif_precios').find(x => norm(x.producto) === norm(producto) && String(x.tallas).split(/[-,\/\s]+/).map(norm).includes(norm(talla)));
+  return x ? { costo: num(x.costo), precio: num(x.precio) } : null;
+}
+/** Mantiene Ventas y entregas sincronizado con las filas por talla de un recibo */
+async function syncVentasRecibo(r) {
+  const prev = Store.all('unif_ventas').filter(v => v.rec_id === r._id);
+  const lines = (r._del || isTrue(r.nulo)) ? [] : (r.unif || []);
+  const out = lines.map((l, i) => { const id = 'rv_' + r._id + '_' + i; const old = Store.get('unif_ventas', id) || {}; return Object.assign({}, old, { _id: id, rec_id: r._id, fecha: r.fecha, recibo: recNum(r), estudiante: r.nombre, grado: r.grado || '', seccion: r.seccion || '', tipo: l.prod, talla: l.talla, cantidad: num(l.cant), precio: num(l.precio), entregado: isTrue(old.entregado) }); });
+  const del = prev.filter(v => !out.some(o => o._id === v._id)).map(v => Object.assign({}, v, { _del: 1 }));
+  if (out.length || del.length) await Store.saveMany('unif_ventas', out.concat(del));
+}
+defMod({ key: 'unif_pedidos', label: 'Pedidos a proveedor', fields: [
+  { k: 'pedido', l: 'Pedido N°', t: 'number', req: 1, plain: 1, def: () => Math.max(1, ...Store.all('unif_pedidos').map(r => num(r.pedido))) },
+  { k: 'fecha', l: 'Fecha', t: 'date', def: today }, { k: 'nivel', l: 'Nivel', t: 'select', o: 'unif_niveles' },
+  { k: 'tipo', l: 'Producto', t: 'select', o: unifTipos, req: 1 }, { k: 'talla', l: 'Talla', t: 'select', o: tallasTodas, req: 1 },
+  { k: 'cantidad', l: 'Cantidad', t: 'number', req: 1 }, { k: 'costo', l: 'Costo unitario', t: 'money', help: 'vacío = lista de precios' },
+  { k: 'precio', l: 'Precio de venta', t: 'money', help: 'vacío = lista de precios' }, { k: 'proveedor', l: 'Proveedor', t: 'ref', ref: 'proveedores' },
+  { k: 'recibido', l: 'Recibido (entra al inventario)', t: 'check', help: 'Al marcarlo, estas unidades suman a las existencias' }, { k: 'f_recibido', l: 'Fecha de recibido', t: 'date' },
+  { k: 'costo_total', l: 'Costo total', t: 'calc', fn: r => money(num(r.cantidad) * num(r.costo)) }, { k: 'venta_proy', l: 'Venta proyectada', t: 'calc', fn: r => money(num(r.cantidad) * num(r.precio)) },
+  { k: 'obs', l: 'Observaciones', t: 'text' }],
+  table: ['pedido', 'fecha', 'nivel', 'tipo', 'talla', 'cantidad', 'costo', 'precio', 'costo_total', 'venta_proy', 'recibido'], filters: ['pedido', 'nivel', 'tipo'], sums: ['cantidad'], sort: { k: 'pedido', dir: -1 },
+  quick: [{ l: 'Pendientes de recibir', fn: r => !isTrue(r.recibido) }, { l: 'Recibidos', fn: r => isTrue(r.recibido) }],
+  beforeSave: r => { if (isTrue(r.recibido) && !r.f_recibido) r.f_recibido = today(); const p = precioDe(r.tipo, r.talla); if (p) { if (r.costo === '' || r.costo === undefined) r.costo = p.costo; if (r.precio === '' || r.precio === undefined) r.precio = p.precio; } } });
+defMod({ key: 'unif_ventas', label: 'Ventas y entregas', fields: [
+  { k: 'fecha', l: 'Fecha', t: 'date', def: today, req: 1 }, { k: 'recibo', l: 'N° de recibo', t: 'text' },
+  { k: 'estudiante', l: 'Estudiante / comprador', t: 'ref', ref: 'estudiantes', fill: { grado: 'grado', seccion: 'seccion' }, req: 1 },
+  { k: 'grado', l: 'Grado', t: 'select', o: 'grados' }, { k: 'seccion', l: 'Sección', t: 'select', o: 'secciones' },
+  { k: 'tipo', l: 'Producto', t: 'select', o: unifTipos, req: 1 }, { k: 'talla', l: 'Talla', t: 'select', o: tallasTodas, req: 1 },
+  { k: 'cantidad', l: 'Cantidad', t: 'number', def: 1, req: 1 }, { k: 'precio', l: 'Precio unitario', t: 'money', help: 'vacío = lista de precios' },
+  { k: 'total', l: 'Total', t: 'calc', fn: r => money(num(r.cantidad) * num(r.precio)) }, { k: 'entregado', l: 'Producto entregado', t: 'check' },
+  { k: 'f_entrega', l: 'Fecha de entrega', t: 'date' }, { k: 'obs', l: 'Observaciones', t: 'text' }, { k: 'rec_id', l: 'id recibo', t: 'text', hide: 1 }],
+  table: ['fecha', 'recibo', 'estudiante', 'grado', 'seccion', 'tipo', 'talla', 'cantidad', 'precio', 'total', 'entregado'], filters: ['tipo', 'talla', 'entregado'], dateField: 'fecha', sums: ['cantidad'], sort: { k: 'fecha', dir: -1 },
+  beforeSave: r => { if (r.precio === '' || r.precio === undefined) { const p = precioDe(r.tipo, r.talla); if (p) r.precio = p.precio; } if (isTrue(r.entregado) && !r.f_entrega) r.f_entrega = today(); },
+  rowClass: r => isTrue(r.entregado) ? '' : 'warn-t', rowIcon: r => r.rec_id ? '<span title="Viene de un recibo">🧾</span> ' : '',
+  quick: [{ l: 'Pendientes de entregar', fn: r => !isTrue(r.entregado) }, { l: 'Entregados', fn: r => isTrue(r.entregado) }] });
+
+/* ---------------- INVENTARIO DE UNIFORMES POR TALLA ----------------
+   Existencia física = último conteo + entradas (movimientos y pedidos recibidos) − salidas − ventas entregadas después del conteo.
+   Disponible = existencia física − vendido sin entregar. */
+const INV_MOV = [
+  { v: 'CONTEO FÍSICO', s: '=', l: 'Conteo físico / existencia inicial' },
+  { v: 'ENTRADA', s: '+', l: 'Entrada (compra o producción)' },
+  { v: 'DEVOLUCIÓN DE CLIENTE', s: '+', l: 'Devolución de cliente' },
+  { v: 'AJUSTE +', s: '+', l: 'Ajuste a favor' },
+  { v: 'AJUSTE −', s: '-', l: 'Ajuste en contra' },
+  { v: 'BAJA', s: '-', l: 'Baja (dañado o perdido)' },
+  { v: 'SALIDA', s: '-', l: 'Salida sin venta (donación, cambio, otro)' }];
+const invSigno = t => (INV_MOV.find(m => m.v === t) || { s: '+' }).s;
+defMod({ key: 'unif_inv', label: 'Movimientos de inventario (uniformes)', fields: [
+  { k: 'fecha', l: 'Fecha', t: 'date', def: today, req: 1 },
+  { k: 'mov', l: 'Movimiento', t: 'select', o: () => INV_MOV.map(m => ({ v: m.v, l: m.l })), req: 1, def: 'ENTRADA' },
+  { k: 'tipo', l: 'Producto', t: 'select', o: unifTipos, req: 1 }, { k: 'talla', l: 'Talla', t: 'select', o: tallasTodas, req: 1 },
+  { k: 'cantidad', l: 'Cantidad', t: 'number', req: 1, help: 'En un conteo físico: lo que hay contado ese día' },
+  { k: 'costo', l: 'Costo unitario', t: 'money', help: 'vacío = lista de precios' }, { k: 'doc', l: 'Documento / referencia', t: 'text' }, { k: 'obs', l: 'Observaciones', t: 'text' }],
+  table: ['fecha', 'mov', 'tipo', 'talla', 'cantidad', 'costo', 'doc', 'obs'], filters: ['mov', 'tipo', 'talla'], dateField: 'fecha', sums: ['cantidad'], sort: { k: 'fecha', dir: -1 },
+  rowClass: r => invSigno(r.mov) === '-' ? 'warn-t' : '',
+  beforeSave: r => { if (r.costo === '' || r.costo === undefined) { const p = precioDe(r.tipo, r.talla); if (p) r.costo = p.costo; } } });
+
+/** Calcula existencias por producto y talla, con su kardex */
+function stockUniformes() {
+  const g = {}, K = (t, s) => norm(t) + '|' + norm(s);
+  const it = (t, s) => { const k = K(t, s); return g[k] = g[k] || { tipo: t, talla: s, ev: [], conteo: null }; };
+  const ts = (d, u) => toYMD(d) + '|' + String(Math.round(num(u))).padStart(15, '0');
+  Store.all('unif_inv').forEach(m => { if (!m.tipo || !m.talla) return; const s = invSigno(m.mov); it(m.tipo, m.talla).ev.push({ t: ts(m.fecha, m._upd), fecha: m.fecha, que: m.mov, doc: m.doc || '', s, q: num(m.cantidad), id: m._id, mod: 'unif_inv' }); });
+  Store.all('unif_pedidos').filter(p => isTrue(p.recibido)).forEach(p => { if (!p.tipo || !p.talla) return; const f = p.f_recibido || p.fecha; it(p.tipo, p.talla).ev.push({ t: ts(f, p._upd), fecha: f, que: 'PEDIDO #' + (p.pedido || '') + ' RECIBIDO', doc: '', s: '+', q: num(p.cantidad), id: p._id, mod: 'unif_pedidos' }); });
+  // productos sin tallas (ej. insignias): las ventas salen de la cantidad cobrada en el rubro del recibo
+  const pseudo = [];
+  productos().filter(pr => pr.sinTallas && pr.rubro).forEach(pr => { const rb = CFG.rubros.find(r => r.k === pr.rubro), t0 = (pr.tallas[0] || {}), pu = num(rb && rb.p) || num(t0.p); if (!pu) return;
+    Store.all('recibos').forEach(r => { if (isTrue(r.nulo)) return; const v = num(r['r_' + pr.rubro]); if (!v) return; pseudo.push({ _id: 'rv_' + r._id, _upd: r._upd, tipo: pr.l, talla: t0.t || 'ÚNICA', cantidad: Math.round(v / pu * 100) / 100, precio: pu, entregado: true, fecha: r.fecha, recibo: recNum(r), estudiante: r.nombre }); }); });
+  Store.all('unif_ventas').concat(pseudo).forEach(v => {
+    if (!v.tipo || !v.talla) return; const x = it(v.tipo, v.talla);
+    x.ventas = (x.ventas || []); x.ventas.push(v);
+    if (isTrue(v.entregado)) { const f = v.f_entrega || v.fecha; x.ev.push({ t: ts(f, v._upd), fecha: f, que: 'ENTREGA A ' + String(v.estudiante || '').toUpperCase(), doc: v.recibo ? 'Recibo ' + v.recibo : '', s: '-', q: num(v.cantidad), id: v._id, mod: 'unif_ventas' }); }
+  });
+  Object.values(g).forEach(x => {
+    x.ev.sort((a, b) => a.t < b.t ? -1 : a.t > b.t ? 1 : 0);
+    let saldo = 0, ent = 0, sal = 0, ultimo = -1;
+    x.ev.forEach((e, i) => { if (e.s === '=') ultimo = i; });
+    x.ev.forEach((e, i) => {
+      if (e.s === '=') { e.antes = saldo; saldo = e.q; if (i === ultimo) { x.conteo = e; ent = 0; sal = 0; } }
+      else if (e.s === '+') { saldo += e.q; if (i > ultimo) ent += e.q; }
+      else { saldo -= e.q; if (i > ultimo) sal += e.q; }
+      e.saldo = saldo;
+    });
+    x.hayConteo = ultimo >= 0;
+    x.sinDatos = !x.hayConteo && !x.ev.some(e => e.s === '+');
+    x.fisica = saldo; x.entradas = ent; x.salidas = sal;
+    const vs = x.ventas || [];
+    x.porEntregar = vs.filter(v => !isTrue(v.entregado)).reduce((a, v) => a + num(v.cantidad), 0);
+    x.vendidoDesde = vs.filter(v => !x.conteo || ts(v.fecha, v._upd) > x.conteo.t).reduce((a, v) => a + num(v.cantidad), 0);
+    x.disp = x.fisica - x.porEntregar;
+    const pr = precioDe(x.tipo, x.talla) || { costo: 0, precio: 0 };
+    x.costo = num(pr.costo); x.precio = num(pr.precio);
+  });
+  return g;
+}
+/** Disponible de una talla (null si nunca se ha registrado inventario de ese producto) */
+let _stkC = null, _stkT = 0;
+function dispTalla(prod, talla) {
+  if (!_stkC || Date.now() - _stkT > 800) { _stkC = stockUniformes(); _stkT = Date.now(); }
+  const g = _stkC; const x = g[norm(prod) + '|' + norm(talla)];
+  if (!Object.values(g).some(y => norm(y.tipo) === norm(prod) && !y.sinDatos)) return null;
+  return x && !x.sinDatos ? x.disp : 0;
+}
+
+/* Borrar recibos en lote también quita sus ventas de uniformes */
+MOD.recibos.afterDelete = async rows => { for (const r of rows) if ((r.unif || []).length) await syncVentasRecibo(Object.assign({}, r, { _del: 1 })); };
+MOD.recibos.afterRestore = async rows => { for (const r of rows) if ((r.unif || []).length) await syncVentasRecibo(Object.assign({}, r, { _del: 0 })); };
+MOD.unif_ventas.bulkWarn = rows => rows.some(r => r.rec_id) ? '⚠ Algunas ventas vienen de un recibo: si vuelve a guardar ese recibo, se crearán de nuevo. Para quitarlas del todo, quite la fila de uniformes en el recibo.' : '';
+
+/* ---------------- AGENDA ---------------- */
+defMod({ key: 'agenda', label: 'Agenda de actividades', scope: 'g', fields: [
+  { k: 'titulo', l: 'Actividad / tarea', t: 'text', req: 1, wide: 1 }, { k: 'tipo', l: 'Tipo', t: 'select', o: () => tiposAg(), def: 'Actividad' },
+  { k: 'fecha', l: 'Fecha', t: 'date', def: today }, { k: 'hora', l: 'Hora', t: 'time' }, { k: 'hora_fin', l: 'Hora fin', t: 'time' },
+  { k: 'prioridad', l: 'Prioridad', t: 'select', o: 'prioridades', def: 'Media', badge: v => v === 'Alta' ? 'bad' : v === 'Baja' ? '' : 'warn' },
+  { k: 'recordar', l: 'Notificar', t: 'select', o: RECORDAR, noBlank: 1, def: 15, fmt: recLabel },
+  { k: 'repetir', l: 'Repetir', t: 'select', o: 'repetir', def: 'No', noBlank: 1 }, { k: 'hasta', l: 'Repetir hasta', t: 'date' },
+  { k: 'lugar', l: 'Lugar / responsable', t: 'text' }, { k: 'descripcion', l: 'Detalle', t: 'textarea', rows: 3 },
+  { k: 'hecho', l: 'Completada ✔', t: 'check' }, { k: 'f_hecho', l: 'Completada el', t: 'date', hide: 1 }, { k: 'hechos', l: 'Fechas completadas (repetitivas)', t: 'text', hide: 1 }],
+  table: ['fecha', 'hora', 'titulo', 'tipo', 'prioridad', 'repetir', 'lugar', 'hecho'], filters: ['tipo', 'prioridad', 'hecho'], dateField: 'fecha', sort: { k: 'fecha', dir: -1 },
+  beforeSave: r => { if (isTrue(r.hecho) && !r.f_hecho) r.f_hecho = today(); if (!isTrue(r.hecho)) r.f_hecho = ''; },
+  afterSave: () => Notif.check(true),
+  listButtons: [{ l: '🖨️ Lista de pendientes', fn: () => printPendientes() }] });
+
+/* ---------------- DOCUMENTOS ---------------- */
+defMod({ key: 'plantillas', label: 'Plantillas de documentos', scope: 'g', fields: [
+  { k: 'nombre', l: 'Nombre de la plantilla', t: 'text', req: 1 }, { k: 'categoria', l: 'Categoría', t: 'select', o: 'doc_categorias' },
+  { k: 'contenido', l: 'Contenido · use {{campo}} para datos variables', t: 'textarea', rows: 16, req: 1, help: 'automáticos: {{fecha_larga}} {{institucion}} {{organismo}} {{lugar}} {{presidente}} {{tesorero}} {{director}}' },
+  { k: 'firmas', l: 'Firmas al pie (una por línea: Nombre | Cargo)', t: 'textarea', rows: 3 },
+  { k: 'f_alin', l: 'Posición de las firmas', t: 'select', o: () => FIRMA_ALIN, def: 'centro' },
+  { k: 'f_esp', l: 'Espacio para firmar', t: 'select', o: () => FIRMA_ESP, def: 'amplio' },
+  { k: 'f_sello', l: 'Recuadro para sello', t: 'select', o: () => FIRMA_SELLO, def: 'no' }],
+  table: ['nombre', 'categoria'], filters: ['categoria'], sort: { k: 'nombre', dir: 1 },
+  actions: [{ l: '📝 Usar', fn: r => go('d:generar', { id: r._id }) }], listButtons: [{ l: '📥 Importar carta / formato', fn: (rows, refresh) => importarPlantillas(refresh) }] });
+defMod({ key: 'documentos', label: 'Documentos emitidos', fields: [
+  { k: 'fecha', l: 'Fecha', t: 'date', def: today }, { k: 'numero', l: 'Correlativo', t: 'text' }, { k: 'plantilla', l: 'Plantilla', t: 'text' },
+  { k: 'destinatario', l: 'Destinatario', t: 'text' }, { k: 'asunto', l: 'Asunto', t: 'text' }, { k: 'contenido', l: 'Contenido final', t: 'textarea', rows: 10 }, { k: 'datos', l: 'Datos', t: 'text', hide: 1 }],
+  table: ['fecha', 'numero', 'plantilla', 'destinatario', 'asunto'], dateField: 'fecha', sort: { k: 'fecha', dir: -1 }, noNew: 1,
+  onRow: r => go('d:generar', { doc: r._id }) });
+
+/* ======================= MENÚ (desplegable) ======================= */
+defMenu('Inicio', '🏠', [{ l: 'Panel principal', v: 'home' }, { l: 'Calendario', v: 'a:cal' }, { l: 'Agenda de actividades', v: 'm:agenda', mod: 'agenda' }, { l: 'Tareas pendientes', v: 'a:pend' }]);
+defMenu('Ingresos', '💰', [{ l: 'Recibos de ingreso', v: 'm:recibos', mod: 'recibos' }, { l: 'Control de digitación', v: 'r:control' }, { l: 'Estudiantes', v: 'm:estudiantes', mod: 'estudiantes' }]);
+defMenu('Reportes de cobro', '📊', [{ l: 'Por grado y sección', v: 'r:grado' }, { l: 'Por rubro (pagaron / pendientes)', v: 'r:rubro' }, { l: 'Resumen por secciones', v: 'r:secciones' }, { l: 'Ingresos por mes', v: 'r:mes' }, { l: 'Constancia de pagos', v: 'r:constancia' }, { l: 'Rendición de cuentas (anual)', v: 'r:rendicion' }]);
+defMenu('Tesorería', '🏦', [{ l: 'Ingresos y cuadre', v: 't:cuadre' }, { l: 'Arqueo de caja', v: 't:arqueo' }, { l: 'Historial de arqueos', v: 'm:arqueos', mod: 'arqueos' }, { l: 'Depósitos / remesas', v: 'm:depositos', mod: 'depositos' }, { l: 'Pagos de arrendamiento', v: 'm:cafetines', mod: 'cafetines' }, { l: 'Arrendatarios', v: 'm:arrendatarios', mod: 'arrendatarios' }, { l: 'Estado de cuenta de arrendatarios', v: 't:arrcuenta' }, { l: 'Donaciones económicas', v: 'm:donaciones', mod: 'donaciones' }, { l: 'Devoluciones', v: 'm:devoluciones', mod: 'devoluciones' }, { l: 'Dinero no remesado', v: 'm:noremesado', mod: 'noremesado' }, { l: 'Cuentas bancarias', v: 'm:cuentas_banco', mod: 'cuentas_banco' }, { l: 'Libro de banco', v: 'm:banco', mod: 'banco' }]);
+defMenu('Caja chica', '💵', [{ l: 'Panel de caja chica', v: 'c:panel' }, { l: 'Registro de caja chica', v: 'm:cajachica', mod: 'cajachica' }, { l: 'Solicitud de reembolso', v: 'c:reembolso' }, { l: 'Recibo (sin factura)', v: 'c:recibo' }, { l: 'Arqueo de caja chica', v: 'c:arqueo' }, { l: 'Directorio de proveedores', v: 'm:proveedores', mod: 'proveedores' }]);
+defMenu('Compras', '🛒', [{ l: 'Procesos de compra', v: 'm:compras', mod: 'compras' }, { l: 'Cheques y vouchers', v: 'm:cheques', mod: 'cheques' }, { l: 'Formatos en blanco', v: 'p:compras' }]);
+defMenu('Bodega', '📦', [{ l: 'Existencias', v: 'b:exist' }, { l: 'Movimientos (entradas/salidas)', v: 'm:movimientos', mod: 'movimientos' }, { l: 'Préstamos pendientes', v: 'b:prest' }, { l: 'Catálogo de artículos', v: 'm:articulos', mod: 'articulos' }, { l: 'Personal y docentes', v: 'm:personal', mod: 'personal' }, { l: 'Impresos de bodega', v: 'b:print' }]);
+defMenu('Uniformes y ventas', '👕', [{ l: 'Existencias por talla', v: 'u:exist' }, { l: 'Movimientos de inventario', v: 'm:unif_inv', mod: 'unif_inv' }, { l: 'Consolidado de pedidos', v: 'u:cons' }, { l: 'Pedidos a proveedor', v: 'm:unif_pedidos', mod: 'unif_pedidos' }, { l: 'Ventas y entregas', v: 'm:unif_ventas', mod: 'unif_ventas' }, { l: 'Catálogo: productos, tallas y precios', v: 'cfg:catalogo' }]);
+defMenu('Documentos', '📝', [{ l: 'Generar documento', v: 'd:generar' }, { l: 'Plantillas', v: 'm:plantillas', mod: 'plantillas' }, { l: 'Documentos emitidos', v: 'm:documentos', mod: 'documentos' }]);
+defMenu('Configuración', '⚙️', [{ l: 'General e institución', v: 'cfg:gen' }, { l: 'Firmantes', v: 'cfg:firmas' }, { l: 'Catálogos y listas', v: 'cfg:listas' }, { l: 'Catálogo de cobros y productos', v: 'cfg:catalogo' }, { l: 'Módulos y campos', v: 'cfg:mods' }, { l: 'Años de trabajo', v: 'cfg:anios' }, { l: 'Importar / exportar', v: 'cfg:import' }, { l: 'Conexión y sincronización', v: 'cfg:sync' }]);
+
+window.__OK = (window.__OK || []).concat('AppModules');
+</script>

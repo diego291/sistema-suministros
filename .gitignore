@@ -1,0 +1,16 @@
+# Carpeta generada (la arma GitHub Actions)
+sitio/
+# NUNCA subir datos personales, respaldos ni claves
+*DATOS_INICIALES*
+*respaldo*
+*Respaldo*
+*backup*
+*.xlsx
+*.xls
+*.csv
+Suministros_DEMO*
+Suministros_Offline*
+*.token
+.env
+__pycache__/
+.DS_Store

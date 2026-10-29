@@ -1,0 +1,823 @@
+<script>
+/* =================================================================
+   REPORTES DE COBRO · CONTROL DE DIGITACIÓN · CUADRE · ARQUEO
+   ================================================================= */
+
+/* ---------- índice de pagos por estudiante ---------- */
+function indicePagos(desde, hasta) {
+  const ests = Store.all('estudiantes');
+  const byId = new Map(), byNie = new Map(), byName = new Map();
+  ests.forEach(e => { byId.set(e._id, e); if (e.nie) byNie.set(String(e.nie).trim(), e); byName.set(norm(e.nombre), e); });
+  const pag = new Map(); const sinBD = [];
+  for (const r of Store.all('recibos')) {
+    if (isTrue(r.nulo)) continue;
+    const f = toYMD(r.fecha); if (desde && f < desde) continue; if (hasta && f > hasta) continue;
+    const e = (r.est_id && byId.get(r.est_id)) || (r.nie && byNie.get(String(r.nie).trim())) || byName.get(norm(r.nombre));
+    if (!e) { sinBD.push(r); continue; }
+    (pag.get(e._id) || pag.set(e._id, []).get(e._id)).push(r);
+  }
+  return { pag, sinBD, ests };
+}
+const secKey = (g, s, o) => `${g}|${s}|${o || ''}`;
+function seccionesDe(ests) {
+  const m = new Map();
+  (ests || Store.all('estudiantes')).forEach(e => {
+    if (/^DUPLICADO/.test(e.estado || '')) return;
+    const o = nivelDe(e.grado) === 'BACHILLERATO' ? (e.opcion || '') : '';
+    const k = secKey(e.grado, e.seccion, o);
+    if (!m.has(k)) m.set(k, { g: e.grado, s: e.seccion, o, n: 0, nivel: nivelDe(e.grado) });
+    if (e.estado !== 'RETIRADO') m.get(k).n++;
+  });
+  return [...m.values()].sort((a, b) => ordenGrado(a.g) - ordenGrado(b.g) || String(a.s).localeCompare(b.s) || String(a.o).localeCompare(b.o));
+}
+const tituloSec = s => `${s.g} – Sección ${s.s}${s.o ? ' – ' + cap(s.o.toLowerCase()) : ''}`;
+const estDeSec = (ests, s) => ests.filter(e => norm(e.grado) === norm(s.g) && norm(e.seccion) === norm(s.s) && (!s.o || norm(e.opcion) === norm(s.o)) && !/^DUPLICADO/.test(e.estado || '')).sort((a, b) => String(a.nombre).localeCompare(b.nombre, 'es'));
+
+/** Filtros comunes: rango de fechas + grado/sección/opción */
+function filtrosHtml(st, opts = {}) {
+  return `<div class="bar">
+    <label class="f"><span>Desde</span><input type="date" class="in" id="fD" value="${st.desde}"></label>
+    <label class="f"><span>Hasta</span><input type="date" class="in" id="fH" value="${st.hasta}"></label>
+    ${opts.sec ? `<label class="f"><span>Grado</span><select class="in" id="fG">${gradosList().map(g => `<option ${g === st.g ? 'selected' : ''}>${esc(g)}</option>`).join('')}</select></label>
+    <label class="f"><span>Sección</span><select class="in" id="fS">${lista('secciones').map(g => `<option ${g === st.s ? 'selected' : ''}>${esc(g)}</option>`).join('')}</select></label>
+    <label class="f"><span>Opción</span><select class="in" id="fO"><option value="">(TODAS)</option>${lista('opciones').map(g => `<option ${g === st.o ? 'selected' : ''}>${esc(g)}</option>`).join('')}</select></label>` : ''}
+    ${opts.extra || ''}<span class="sp"></span>${opts.btns || ''}</div>`;
+}
+function leerFiltros(el, st) {
+  ['fD:desde', 'fH:hasta', 'fG:g', 'fS:s', 'fO:o'].forEach(p => { const [id, k] = p.split(':'); const x = $('#' + id, el); if (x) st[k] = x.value; });
+  return st;
+}
+const stDef = () => ({ desde: Store.year + '-01-01', hasta: String(Store.year) === today().slice(0, 4) ? today() : Store.year + '-12-31', g: '', s: '', o: '' });
+
+/* ---------- CONTROL DE DIGITACIÓN ---------- */
+function controlRecibos(serie) {
+  const all = Store.all('recibos').filter(r => serie === undefined || serie === '' || (r.serie || '') === serie);
+  // cada serie tiene su propia numeración: saltados y repetidos se calculan por serie
+  const grupos = {}; all.forEach(r => { const n = num(r.numero); if (n) (grupos[r.serie || ''] = grupos[r.serie || ''] || []).push(n); });
+  const saltados = [], talonarios = [], repetidos = [], series = {};
+  const et = (g, n) => (g ? g + '-' : '') + n;
+  Object.keys(grupos).sort().forEach(g => {
+    const set = new Map(); grupos[g].forEach(n => set.set(n, (set.get(n) || 0) + 1));
+    const u = [...set.keys()].sort((a, b) => a - b);
+    for (let i = 1; i < u.length; i++) { const d = u[i] - u[i - 1]; if (d > 1 && d <= 51) for (let n = u[i - 1] + 1; n < u[i]; n++) saltados.push(et(g, n)); else if (d > 51) talonarios.push(`${et(g, u[i - 1])} → ${et(g, u[i])}`); }
+    [...set].filter(([, c]) => c > 1).forEach(([n]) => repetidos.push(et(g, n)));
+    series[g] = { min: u[0], max: u[u.length - 1], n: grupos[g].length };
+  });
+  const ks = Object.keys(series).sort();
+  const min = ks.length === 1 ? series[ks[0]].min : 0, max = ks.length === 1 ? series[ks[0]].max : 0;
+  const ests = Store.all('estudiantes'); const nomSet = new Set(ests.map(e => norm(e.nombre))), nieSet = new Set(ests.map(e => String(e.nie || '').trim()).filter(Boolean)), idSet = new Set(ests.map(e => e._id));
+  const alertas = [];
+  const t = today();
+  all.forEach(r => {
+    if (isTrue(r.nulo)) return;
+    const suma = rubrosOn().reduce((s, rb) => s + num(r['r_' + rb.k]), 0);
+    const a = [];
+    if ((r.tipo === 'Estudiante' || !r.tipo) && (!r.grado || gradosList().includes(r.grado))) if (!idSet.has(r.est_id) && !nieSet.has(String(r.nie || '').trim()) && !nomSet.has(norm(r.nombre))) a.push('NOMBRE NO ESTÁ EN BD');
+    if (num(r.pago) && !suma) a.push('INGRESO SIN DESGLOSE POR RUBRO');
+    else if (Math.abs(num(r.pago) - suma) > 0.004) a.push(num(r.pago) < suma ? 'PAGO MENOR QUE RUBROS' : 'PAGO MAYOR QUE RUBROS');
+    if (toYMD(r.fecha) > t) a.push('FECHA FUTURA');
+    if (!toYMD(r.fecha).startsWith(String(Store.year))) a.push('FECHA FUERA DEL AÑO');
+    if (a.length) alertas.push({ r, suma, a: a.join(' · ') });
+  });
+  return { all, min, max, series, saltados, talonarios, repetidos, alertas, nulos: all.filter(r => isTrue(r.nulo)).length };
+}
+defView('r:control', 'Control de digitación de recibos', el => {
+  let serie = LS.get('ctrlSerie', '');
+  const draw = () => {
+    const c = controlRecibos(serie); const t = today(), mes = t.slice(0, 7);
+    const sk = Object.keys(c.series).sort();
+    const rango = sk.map(g => `${g ? 'Serie ' + g + ': ' : ''}${c.series[g].min} / ${c.series[g].max}`).join(' · ') || '—';
+    const prox = sk.map(g => `${g ? g + '-' : ''}${c.series[g].max + 1}`).join(' · ') || '—';
+    const v = c.all.filter(r => !isTrue(r.nulo));
+    const hoy = v.filter(r => toYMD(r.fecha) === t);
+    const fmax = v.map(r => toYMD(r.fecha)).sort().pop();
+    const k = (l, val, s, cls) => `<div class="kpi ${cls || ''}"><div class="l">${l}</div><div class="v">${val}</div><div class="s">${s || ''}</div></div>`;
+    el.innerHTML = `<div class="bar"><div class="chips"><span class="chip ${!serie ? 'on' : ''}" data-se="">Todas las series</span>${lista('series').map(x => `<span class="chip ${serie === x ? 'on' : ''}" data-se="${esc(x)}">Serie ${esc(x)}</span>`).join('')}</div><button class="btn pri" id="cNew">+ Digitar recibo</button><span class="sp"></span><button class="btn" id="cPr">🖨️ Imprimir control</button></div>
+    <div class="kpis">${k('Recibos digitados', c.all.length, `${c.nulos} anulados`)}${k('Primer / último', `<span style="font-size:${sk.length > 1 ? '14px' : 'inherit'}">${rango}</span>`)}${k('Próximo correlativo', `<span style="font-size:${sk.length > 1 ? '14px' : 'inherit'}">${prox}</span>`, 'a digitar', 'ok')}
+      ${k('Saltados', c.saltados.length, 'sin digitar', c.saltados.length ? 'bad' : 'ok')}${k('Repetidos', c.repetidos.length, 'N° duplicados', c.repetidos.length ? 'bad' : 'ok')}
+      ${k('Recaudado hoy', money(hoy.reduce((s, r) => s + num(r.pago), 0)), hoy.length + ' recibo(s)')}${k('Este mes', money(v.filter(r => toYMD(r.fecha).startsWith(mes)).reduce((s, r) => s + num(r.pago), 0)))}
+      ${k('Acumulado del año', money(v.reduce((s, r) => s + num(r.pago), 0)), 'fecha más reciente: ' + (fdate(fmax) || '—'))}</div>
+    ${c.saltados.length ? `<div class="alert bad"><b>N° saltados:</b> ${c.saltados.slice(0, 300).join(', ')}${c.saltados.length > 300 ? '…' : ''}</div>` : ''}
+    ${c.repetidos.length ? `<div class="alert bad"><b>N° repetidos (${c.repetidos.length}):</b> ${c.repetidos.slice(0, 200).join(', ')}${c.repetidos.length > 200 ? '…' : ''}${(duplicadosExactos().recibos || []).length ? `<div style="margin-top:8px"><b>${duplicadosExactos().recibos.length} son copias idénticas</b> (mismo nombre, fecha, concepto y montos). <button class="btn sm" id="cDup">🧹 Eliminar copias idénticas</button></div>` : ''}</div>` : ''}
+    ${c.talonarios.length ? `<div class="alert info"><b>Saltos grandes de numeración</b> (cambio de talonario o número mal digitado): ${c.talonarios.join(' · ')}</div>` : ''}
+    <div class="card"><h3>Lista de alertas <small>(${c.alertas.length}) · clic para corregir</small></h3>
+    ${c.alertas.length ? `<div class="tw"><table class="t"><thead><tr><th>N° recibo</th><th>Fecha</th><th>Nombre</th><th>Grado</th><th>Concepto</th><th class="r">Pago</th><th class="r">Suma rubros</th><th class="r">Diferencia</th><th>Alerta</th></tr></thead><tbody>
+    ${c.alertas.sort((a, b) => String(a.r.serie || '').localeCompare(b.r.serie || '') || num(a.r.numero) - num(b.r.numero)).map(x => `<tr data-id="${x.r._id}" style="cursor:pointer"><td>${MOD.recibos.rowIcon(x.r)}${recNum(x.r)}</td><td>${fdate(x.r.fecha)}</td><td>${esc(x.r.nombre)}</td><td>${esc((x.r.grado || '') + ' ' + (x.r.seccion || ''))}</td><td>${esc(x.r.concepto)}</td><td class="num">${money(x.r.pago)}</td><td class="num">${money(x.suma)}</td><td class="num">${money(num(x.r.pago) - x.suma)}</td><td><span class="tag warn">${esc(x.a)}</span></td></tr>`).join('')}</tbody></table></div>` : '<div class="alert ok">✔ Sin alertas.</div>'}</div>`;
+    $$('[data-se]', el).forEach(ch => ch.onclick = () => { serie = ch.dataset.se; LS.set('ctrlSerie', serie); draw(); });
+    $('#cNew', el).onclick = () => openRecibo(null, draw);
+    const cd = $('#cDup', el); if (cd) cd.onclick = async () => { const d = duplicadosExactos().recibos; if (!(await confirmBox(`Se eliminarán ${d.length} recibo(s) duplicado(s) idénticos; se conserva uno de cada uno.`, 'Eliminar'))) return; await Store.saveMany('recibos', d.map(x => Object.assign({}, x, { _del: 1 }))); toast(`✔ ${d.length} duplicado(s) eliminado(s)`, 'ok'); draw(); };
+    $$('tr[data-id]', el).forEach(tr => tr.onclick = () => openRecibo(Store.get('recibos', tr.dataset.id), draw));
+    $('#cPr', el).onclick = () => Print.show('Control de digitación', `<div class="page">${membrete()}<div class="ptitle">CONTROL DE DIGITACIÓN DE RECIBOS</div><div class="psub">Al ${flong(today())}</div>
+      <div class="pkpi"><div><small>Digitados${serie ? ' · Serie ' + esc(serie) : ''}</small><b>${c.all.length}</b></div><div><small>Primer / último</small><b style="font-size:11px">${rango}</b></div><div><small>Saltados</small><b>${c.saltados.length}</b></div><div><small>Repetidos</small><b>${c.repetidos.length}</b></div><div><small>Anulados</small><b>${c.nulos}</b></div><div><small>Acumulado</small><b>${money(v.reduce((s, r) => s + num(r.pago), 0))}</b></div></div>
+      ${c.saltados.length ? `<p class="pnote"><b>Saltados:</b> ${c.saltados.join(', ')}</p>` : ''}${c.repetidos.length ? `<p class="pnote"><b>Repetidos:</b> ${c.repetidos.join(', ')}</p>` : ''}
+      ${ptable(['N°', 'Fecha', 'Nombre', 'Concepto', 'Pago', 'Rubros', 'Alerta'], c.alertas.map(x => `<tr><td>${recNum(x.r)}</td><td>${fdate(x.r.fecha)}</td><td>${esc(x.r.nombre)}</td><td>${esc(x.r.concepto)}</td><td class="r">${money(x.r.pago)}</td><td class="r">${money(x.suma)}</td><td>${esc(x.a)}</td></tr>`))}${pfoot()}</div>`);
+  };
+  draw(); return draw;
+});
+
+/* ---------- REPORTE POR GRADO Y SECCIÓN ---------- */
+defView('r:grado', 'Reporte de aportes por grado y sección', el => {
+  const st = Object.assign(stDef(), LS.get('rg', {}));
+  if (!st.g) { const s0 = seccionesDe()[0]; if (s0) { st.g = s0.g; st.s = s0.s; st.o = s0.o; } }
+  const draw = () => {
+    const rbs = rubrosOn();
+    el.innerHTML = filtrosHtml(st, { sec: 1, extra: `<label class="f"><span>Verificar rubro</span><select class="in" id="fV">${rbs.map(r => `<option value="${r.k}" ${r.k === st.v ? 'selected' : ''}>${esc(r.l)}</option>`).join('')}</select></label>
+      <label class="f"><span>Meses requeridos</span><input class="in" type="number" id="fM" value="${st.m || mesesRequeridos(st.hasta)}" style="width:80px" title="Por defecto: ${(CFG.alimentos.modo || 'anual') === 'anual' ? 'todo el año' : 'hasta la fecha'} (Configuración › General)"></label>`, btns: `<button class="btn" id="bLote">🖨️ Lote (un solo PDF)</button><button class="btn" id="bInd">📑 PDF individuales</button><button class="btn pri" id="bPr">🖨️ Imprimir</button>` }) + '<div id="rgOut"></div>';
+    const calc = s => reporteGrado(s, st);
+    const s = { g: st.g, s: st.s, o: st.o };
+    const R = calc(s);
+    $('#rgOut', el).innerHTML = R.n ? `<div class="kpis">
+      <div class="kpi"><div class="l">Estudiantes</div><div class="v">${R.n}</div></div><div class="kpi ok"><div class="l">Con algún pago</div><div class="v">${R.conPago}</div></div>
+      <div class="kpi bad"><div class="l">Sin ningún pago</div><div class="v">${R.n - R.conPago}</div></div><div class="kpi"><div class="l">Total recaudado</div><div class="v">${money(R.total)}</div></div>
+      <div class="kpi ok"><div class="l">Pagaron ${esc(R.vLabel)}</div><div class="v">${R.pagV}</div></div><div class="kpi bad"><div class="l">Pendientes</div><div class="v">${R.n - R.pagV}</div></div>
+      <div class="kpi"><div class="l">Cumplimiento</div><div class="v">${pct(R.pagV, R.n)}</div></div></div>
+      <div class="tw">${R.tabla}</div>` : '<div class="empty">No hay estudiantes en esta sección. Revise grado, sección y opción (para básica y parvularia use "(TODAS)").</div>';
+    $$('select,input', el).forEach(x => x.onchange = () => { leerFiltros(el, st); st.v = $('#fV', el).value; st.m = num($('#fM', el).value); LS.set('rg', st); draw(); });
+    $('#bPr', el).onclick = () => Print.show('Reporte ' + tituloSec(s), paginaGrado(R, s, st));
+    $('#bLote', el).onclick = () => elegirLote(lst => Print.show('Reporte de aportes por lote', lst.map(x => paginaGrado(calc(x), x, st)).join('')));
+    $('#bInd', el).onclick = () => elegirLote(lst => pdfIndividuales('Reporte de aportes', lst, x => paginaGrado(calc(x), x, st)));
+  };
+  draw(); return draw;
+});
+function reporteGrado(s, st) {
+  const { pag, ests } = indicePagos(st.desde, st.hasta);
+  const rbs = rubrosOn(); const vrb = rbs.find(r => r.k === st.v) || rbs.find(r => r.meses) || rbs[0];
+  const mReq = num(st.m || mesesRequeridos(st.hasta));
+  const lista = estDeSec(ests, s).filter(e => e.estado !== 'RETIRADO' || pag.has(e._id));
+  const filas = lista.map(e => {
+    const rs = pag.get(e._id) || [];
+    const t = {}; rbs.forEach(rb => t[rb.k] = rs.reduce((a, r) => a + num(r['r_' + rb.k]), 0));
+    const meses = r2(rs.reduce((a, r) => a + mesesAlimDe(r), 0));
+    const tot = rs.reduce((a, r) => a + num(r.pago), 0);
+    const ok = vrb.meses ? meses >= mReq : t[vrb.k] > 0;
+    return { e, rs, t, meses, tot, ok, ult: rs.map(r => toYMD(r.fecha)).sort().pop() || '' };
+  });
+  const usados = rbs.filter(rb => filas.some(f => f.t[rb.k]) || rb.k === vrb.k);
+  const sumR = k => filas.reduce((a, f) => a + f.t[k], 0);
+  const head = ['N°', 'Nombre del estudiante', 'NIE', ...usados.map(r => r.l), ...(usados.some(r => r.meses) ? ['Meses alim.'] : []), 'TOTAL $', '# Rec.', 'N° de recibos', 'Último pago', 'Estado'];
+  const conMeses = usados.some(r => r.meses);
+  const tabla = `<table class="t"><thead><tr>${head.map(h => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${filas.map((f, i) => `<tr><td>${i + 1}</td><td>${esc(f.e.nombre)}${f.e.estado === 'RETIRADO' ? ' <span class="tag bad">RETIRADO</span>' : ''}</td><td>${esc(f.e.nie || '')}</td>${usados.map(rb => `<td class="num">${f.t[rb.k] ? money(f.t[rb.k]) : ''}</td>`).join('')}${conMeses ? `<td class="num">${f.meses || ''}</td>` : ''}<td class="num"><b>${f.tot ? money(f.tot) : ''}</b></td><td class="num">${f.rs.length || ''}</td><td style="font-size:11.5px">${esc(f.rs.map(recNum).join(', '))}</td><td>${fdate(f.ult)}</td><td><span class="tag ${f.ok ? 'ok' : 'bad'}">${f.ok ? 'PAGADO' : 'PENDIENTE'}</span></td></tr>`).join('')}</tbody>
+    <tfoot><tr><td></td><td>TOTALES (${filas.filter(f => f.tot).length} con pago)</td><td></td>${usados.map(rb => `<td class="num">${money(sumR(rb.k))}</td>`).join('')}${conMeses ? `<td class="num">${filas.reduce((a, f) => a + f.meses, 0)}</td>` : ''}<td class="num">${money(filas.reduce((a, f) => a + f.tot, 0))}</td><td class="num">${filas.reduce((a, f) => a + f.rs.length, 0)}</td><td colspan="3"></td></tr></tfoot></table>`;
+  return { n: filas.length, filas, usados, conMeses, tabla, total: filas.reduce((a, f) => a + f.tot, 0), conPago: filas.filter(f => f.tot).length, pagV: filas.filter(f => f.ok).length, vLabel: vrb.l + (vrb.meses ? ` (${mReq} meses)` : ''), sumR };
+}
+function paginaGrado(R, s, st) {
+  const u = R.usados;
+  const rows = R.filas.map((f, i) => `<tr><td class="c">${i + 1}</td><td>${esc(f.e.nombre)}</td><td>${esc(f.e.nie || '')}</td>${u.map(rb => `<td class="r">${f.t[rb.k] ? nfmt(f.t[rb.k]) : ''}</td>`).join('')}${R.conMeses ? `<td class="c">${f.meses || ''}</td>` : ''}<td class="r"><b>${f.tot ? nfmt(f.tot) : ''}</b></td><td style="font-size:9px">${esc(f.rs.map(recNum).join(', '))}</td><td>${fdate(f.ult)}</td><td style="color:${f.ok ? '#2e7d32' : '#c00'}"><b>${f.ok ? 'PAGADO' : 'PENDIENTE'}</b></td></tr>`);
+  const foot = `<tr class="tot"><td></td><td>TOTALES</td><td></td>${u.map(rb => `<td class="r">${nfmt(R.sumR(rb.k))}</td>`).join('')}${R.conMeses ? `<td class="c">${R.filas.reduce((a, f) => a + f.meses, 0)}</td>` : ''}<td class="r">${money(R.total)}</td><td colspan="3"></td></tr>`;
+  return `<div class="page land">${membrete()}<div class="ptitle">REPORTE DE APORTES POR GRADO Y SECCIÓN</div><div class="psub">${esc(tituloSec(s))} · Del ${fdate(st.desde)} al ${fdate(st.hasta)}</div>
+    <div class="pkpi"><div><small>Estudiantes</small><b>${R.n}</b></div><div><small>Con algún pago</small><b>${R.conPago}</b></div><div><small>Sin pago</small><b>${R.n - R.conPago}</b></div><div><small>Recaudado</small><b>${money(R.total)}</b></div><div><small>Pagaron ${esc(R.vLabel)}</small><b>${R.pagV}</b></div><div><small>Cumplimiento</small><b>${pct(R.pagV, R.n)}</b></div></div>
+    ${ptable(['N°', 'Nombre del estudiante', 'NIE', ...u.map(r => r.l), ...(R.conMeses ? ['Meses'] : []), 'TOTAL $', 'N° recibos', 'Último pago', 'Estado'], rows, { foot })}
+    ${firmasDoc('grado')}</div>`;
+}
+
+/** Selector de lote de secciones (todas / por nivel / marcadas) */
+function elegirLote(cb, opts = {}) {
+  const secs = seccionesDe(); const marc = new Set(LS.get('loteMarcadas', []));
+  const niveles = [...new Set(CFG.grados.map(g => g.nivel))];
+  modal('Elegir secciones para imprimir', `<div class="chips" style="margin-bottom:10px"><span class="chip" data-n="*">Todas</span>${niveles.map(n => `<span class="chip" data-n="${esc(n)}">${esc(n)}</span>`).join('')}<span class="chip" data-n="-">Quitar todas</span></div>
+    ${opts.soloPagos ? `<label class="chk" style="margin-bottom:8px"><input type="checkbox" id="lSP" checked> Incluir solo secciones con pagos del rubro</label>` : ''}
+    <div class="sec-list">${secs.map(s => { const k = secKey(s.g, s.s, s.o); return `<label><input type="checkbox" value="${esc(k)}" data-niv="${esc(s.nivel)}" ${marc.has(k) ? 'checked' : ''}> ${esc(tituloSec(s))} <span class="muted" style="margin-left:auto">${s.n} est.</span></label>`; }).join('')}</div>
+    <p class="muted" style="font-size:12px">Las secciones marcadas se recuerdan para la próxima vez. Cada sección sale en su propia página.</p>`,
+    [{ l: 'Cancelar' }, { l: '🖨️ Generar', pri: 1, fn: () => { const ks = $$('.sec-list input:checked').map(x => x.value); if (!ks.length) { toast('Marque al menos una sección', 'bad'); return false; } LS.set('loteMarcadas', ks); const sp = $('#lSP') ? $('#lSP').checked : false; const lst = secs.filter(s => ks.includes(secKey(s.g, s.s, s.o))); setTimeout(() => cb(lst, sp), 30); return true; } }]);
+  $$('.chip[data-n]').forEach(c => c.onclick = () => { const n = c.dataset.n; $$('.sec-list input').forEach(i => i.checked = n === '*' ? true : n === '-' ? false : (i.dataset.niv === n ? true : i.checked)); });
+}
+
+/* ---------- PDF INDIVIDUALES POR LOTE (un archivo por sección, envío a docentes) ---------- */
+function pdfIndividuales(titulo, lst, htmlDe) {
+  if (Sync.mode === 'local') return toast('Los PDF individuales se crean en su Drive: requiere la app conectada a Google (Configuración › Conexión).', 'bad', 7000);
+  CFG.guias = CFG.guias || {};
+  const pers = Store.all('personal').filter(p => p.estado !== 'INACTIVO').sort((a, b) => String(a.nombre).localeCompare(b.nombre, 'es'));
+  const per = id => Store.get('personal', id);
+  modal('PDF individuales · ' + esc(titulo), `<p class="muted">Se creará <b>un PDF por sección</b> en su Drive (carpeta <i>Reportes PDF/${Store.year}</i>) y un .zip con todos. Asigne el docente guía de cada sección (se recuerda) para nombrar el archivo y, si quiere, enviárselo por correo.</p>
+    <div class="tw" style="max-height:340px"><table class="t"><thead><tr><th>Sección</th><th>Docente guía</th><th>Correo</th></tr></thead><tbody>
+    ${lst.map((x, i) => { const k = secKey(x.g, x.s, x.o), pid = CFG.guias[k] || ''; const p = per(pid); return `<tr data-i="${i}"><td>${esc(tituloSec(x))}</td><td><select class="in" data-doc style="min-width:220px"><option value="">(sin asignar)</option>${pers.map(p => `<option value="${p._id}" ${p._id === pid ? 'selected' : ''}>${esc(p.nombre)}</option>`).join('')}</select></td><td class="muted" data-mail>${esc((p && p.email) || '')}</td></tr>`; }).join('')}</tbody></table></div>
+    <label class="chk" style="margin-top:10px"><input type="checkbox" id="piSend"> ✉️ Enviar a cada docente su PDF por correo (usa el correo registrado en Bodega › Personal y docentes)</label>
+    <div class="form" id="piMail" style="margin-top:8px;display:none"><label class="f wide"><span>Asunto</span><input class="in" id="piSub" value="${esc(titulo)} · {seccion}"></label>
+      <label class="f wide"><span>Mensaje ({docente} y {seccion} se reemplazan solos)</span><textarea class="in" id="piBody" rows="4">Estimado(a) {docente}:\n\nAdjunto el ${esc(titulo.toLowerCase())} de su sección {seccion}, para su revisión y seguimiento con los estudiantes pendientes.\n\nAtentamente,\n${esc(CFG.firmas.suministros || CFG.inst.area || 'Suministros')}</textarea></label></div>`,
+    [{ l: 'Cancelar' }, { l: '📑 Generar PDF individuales', pri: 1, fn: async () => {
+      const filas = $$('#modal tr[data-i]').map(tr => ({ x: lst[tr.dataset.i], pid: $('[data-doc]', tr).value }));
+      filas.forEach(f => { CFG.guias[secKey(f.x.g, f.x.s, f.x.o)] = f.pid; }); await saveCfg(true);
+      const send = $('#piSend').checked, sub = $('#piSub').value, body = $('#piBody').value;
+      if (send) { const sin = filas.filter(f => !(per(f.pid) || {}).email); if (sin.length && !(await confirmBox(`${sin.length} sección(es) no tienen docente con correo: se crearán sus PDF pero no se enviarán. ¿Continuar?`, 'Continuar'))) return false; }
+      setTimeout(() => generarLote(titulo, filas, htmlDe, send, sub, body), 30);
+    } }]);
+  $('#piSend').onchange = e => $('#piMail').style.display = e.target.checked ? '' : 'none';
+  $$('#modal [data-doc]').forEach(sel => sel.onchange = () => { const p = per(sel.value); sel.closest('tr').querySelector('[data-mail]').textContent = (p && p.email) || ''; });
+}
+async function generarLote(titulo, filas, htmlDe, send, sub, body) {
+  const css = Array.from(document.querySelectorAll('style')).map(x => x.textContent).join('\n');
+  const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ').replace(':', '');
+  const t = toast(`Generando PDF 0 de ${filas.length}…`, '', 600000);
+  let folderId = '', folderUrl = '', files = [];
+  try {
+    for (let i = 0; i < filas.length; i += 4) {
+      const items = filas.slice(i, i + 4).map(f => { const p = Store.get('personal', f.pid); const sec = tituloSec(f.x); const doc = p ? p.nombre : ''; const rep = s => String(s).replace(/\{seccion\}/g, sec).replace(/\{docente\}/g, doc || 'docente');
+        return { name: `${sec}${doc ? ' - ' + doc : ''} - ${titulo}`, html: htmlDe(f.x), email: send && p ? p.email || '' : '', subject: rep(sub || ''), body: rep(body || '') }; });
+      const r = await Sync.call({ action: 'pdfBatch', year: Store.year, folderId, folderName: `${titulo} ${stamp}`, css, items, send, sender: CFG.inst.area || 'Suministros' });
+      folderId = r.folderId; folderUrl = r.folderUrl; files = files.concat(r.files);
+      t.innerHTML = `Generando PDF ${files.length} de ${filas.length}…`;
+    }
+    t.innerHTML = 'Comprimiendo en .zip…';
+    const z = await Sync.call({ action: 'pdfZip', folderId, name: titulo });
+    t.remove();
+    const env = files.filter(f => f.sent).length, err = files.filter(f => f.error);
+    modal('PDF individuales listos ✔', `<div class="alert ok">${files.length} PDF creado(s)${send ? ` · ${env} enviado(s) por correo` : ''}.</div>${err.length ? `<div class="alert bad">No se pudieron enviar: ${err.map(f => esc(f.name) + ' (' + esc(f.error) + ')').join('<br>')}</div>` : ''}
+      <div class="bar"><a class="btn pri" href="${z.download}" target="_blank">⬇️ Descargar todos (.zip)</a><a class="btn" href="${folderUrl}" target="_blank">📁 Abrir carpeta en Drive</a></div>
+      <div class="tw" style="max-height:340px"><table class="t"><tbody>${files.map(f => `<tr><td>📄 <a href="${f.url}" target="_blank">${esc(f.name)}</a></td><td>${f.sent ? '<span class="tag ok">✉️ enviado</span>' : ''}</td></tr>`).join('')}</tbody></table></div>
+      <p class="muted" style="font-size:12px">Cada enlace se puede compartir desde Drive. Límite de Google: unos 100 correos por día en cuentas gratuitas.</p>`, [{ l: 'Cerrar', pri: 1 }]);
+  } catch (e) {
+    t.remove();
+    toast('No se pudieron generar los PDF: ' + esc((e && (e.msg || e.error)) || e) + (files.length ? ` (${files.length} ya creados en Drive)` : ''), 'bad', 9000);
+  }
+}
+
+/* ---------- REPORTE POR RUBRO (pagaron / pendientes + lotes) ---------- */
+function calcRubro(s, rk, ix) {
+  const pag = [], pen = [], notas = [], retir = [];
+  let n = 0;
+  estDeSec(ix.ests, s).forEach(e => {
+    n++;
+    const rs = (ix.pag.get(e._id) || []).filter(r => num(r['r_' + rk]));
+    const monto = rs.reduce((a, r) => a + num(r['r_' + rk]), 0);
+    const nie = e.nie || 'Sin NIE';
+    if (monto > 0) { pag.push({ n, e, nie, monto, recs: [...new Set(rs.map(recNum))].join(', '), ult: rs.map(r => toYMD(r.fecha)).sort().pop() }); if (!e.nie) notas.push(`${e.nombre} no tiene NIE registrado.`); if (e.estado === 'RETIRADO') notas.push(`${e.nombre} aparece como RETIRADO, pero tiene pago registrado.`); }
+    else if (e.estado === 'RETIRADO') retir.push(e.nombre);
+    else { pen.push({ n, e, nie }); if (!e.nie) notas.push(`${e.nombre} no tiene NIE registrado.`); }
+  });
+  if (pag.length >= 3) {
+    const cnt = {}; let moda = 0, mx = 0; pag.forEach(p => { const k = p.monto.toFixed(2); cnt[k] = (cnt[k] || 0) + 1; if (cnt[k] > mx) { mx = cnt[k]; moda = p.monto; } });
+    const dif = pag.filter(p => Math.abs(p.monto - moda) > 0.004);
+    if (dif.length && dif.length <= Math.max(1, Math.floor(pag.length / 5))) dif.forEach(p => notas.push(`${p.e.nombre} registra ${money(p.monto)} (distinto a los ${money(moda)} que pagó la mayoría). Verificar.`));
+  }
+  if (retir.length) notas.push('Retirados sin pago de este rubro (no cuentan como pendientes): ' + retir.join('; ') + '.');
+  return { s, titulo: tituloSec(s), est: pag.length + pen.length, pag, pen, notas, monto: pag.reduce((a, p) => a + p.monto, 0) };
+}
+defView('r:rubro', 'Reporte de pagos por rubro', el => {
+  const st = Object.assign(stDef(), LS.get('rr', {}));
+  if (!st.rk) st.rk = (rubrosOn()[0] || {}).k;
+  if (!st.g) { const s0 = seccionesDe()[0]; if (s0) { st.g = s0.g; st.s = s0.s; st.o = s0.o; } }
+  const draw = () => {
+    const rb = CFG.rubros.find(r => r.k === st.rk) || rubrosOn()[0];
+    el.innerHTML = filtrosHtml(st, { sec: 1, extra: `<label class="f"><span>Rubro</span><select class="in" id="fR">${rubrosOn().map(r => `<option value="${r.k}" ${r.k === st.rk ? 'selected' : ''}>${esc(r.l)}</option>`).join('')}</select></label>`,
+      btns: `<button class="btn" id="bRes">📋 Resumen general</button><button class="btn" id="bLote">🖨️ Lote (un solo PDF)</button><button class="btn" id="bInd">📑 PDF individuales</button><button class="btn pri" id="bPr">🖨️ Esta sección</button>` }) + '<div id="rrOut"></div>';
+    const ix = indicePagos(st.desde, st.hasta);
+    const sec = calcRubro({ g: st.g, s: st.s, o: st.o }, st.rk, ix);
+    $('#rrOut', el).innerHTML = sec.est ? `<div class="kpis"><div class="kpi"><div class="l">Estudiantes</div><div class="v">${sec.est}</div></div><div class="kpi ok"><div class="l">Pagaron</div><div class="v">${sec.pag.length}</div></div><div class="kpi bad"><div class="l">Pendientes</div><div class="v">${sec.pen.length}</div></div><div class="kpi"><div class="l">% pagado</div><div class="v">${pct(sec.pag.length, sec.est)}</div></div><div class="kpi"><div class="l">Monto recaudado</div><div class="v">${money(sec.monto)}</div></div></div>
+      <div class="grid g2"><div class="card"><h3 class="ok-t">■ Pagaron (${sec.pag.length})</h3><div class="tw" style="max-height:none"><table class="t"><thead><tr><th>N°</th><th>Nombre</th><th>NIE</th><th class="r">Monto</th><th>Recibo(s)</th><th>Último</th></tr></thead><tbody>${sec.pag.map(p => `<tr><td>${p.n}</td><td>${esc(p.e.nombre)}</td><td>${esc(p.nie)}</td><td class="num">${money(p.monto)}</td><td>${esc(p.recs)}</td><td>${fdate(p.ult)}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">Nadie ha pagado este rubro en el período.</td></tr>'}</tbody></table></div></div>
+      <div class="card"><h3 class="bad-t">■ Pendientes de pago (${sec.pen.length})</h3><div class="tw" style="max-height:none"><table class="t"><thead><tr><th>N°</th><th>Nombre</th><th>NIE</th></tr></thead><tbody>${sec.pen.map(p => `<tr><td>${p.n}</td><td>${esc(p.e.nombre)}</td><td>${esc(p.nie)}</td></tr>`).join('') || '<tr><td colspan="3" class="ok-t">Sin pendientes: todos los estudiantes activos pagaron.</td></tr>'}</tbody></table></div></div></div>
+      ${sec.notas.length ? `<div class="alert warn">${sec.notas.map(esc).join('<br>')}</div>` : ''}` : '<div class="empty">No hay estudiantes en esta sección.</div>';
+    $$('select,input', el).forEach(x => x.onchange = () => { leerFiltros(el, st); st.rk = $('#fR', el).value; LS.set('rr', st); draw(); });
+    const meta = { rubro: rb.l, desde: st.desde, hasta: st.hasta };
+    $('#bPr', el).onclick = () => Print.show(rb.l + ' - ' + sec.titulo, paginaRubro(sec, meta));
+    $('#bLote', el).onclick = () => elegirLote((lst, sp) => { let secs = lst.map(s => calcRubro(s, st.rk, ix)).filter(x => x.est); if (sp) secs = secs.filter(x => x.pag.length); if (!secs.length) return toast('Ninguna sección con datos', 'bad'); Print.show(rb.l + ' - lote', paginaResumenRubro(secs, meta, ix) + secs.map(x => paginaRubro(x, meta)).join('')); }, { soloPagos: 1 });
+    $('#bInd', el).onclick = () => elegirLote(lst => pdfIndividuales('Reporte de ' + rb.l, lst, x => paginaRubro(calcRubro(x, st.rk, ix), meta)));
+    $('#bRes', el).onclick = () => { const secs = seccionesDe().map(s => calcRubro(s, st.rk, ix)).filter(x => x.est); Print.show(rb.l + ' - resumen', paginaResumenRubro(secs, meta, ix)); };
+  };
+  draw(); return draw;
+});
+function paginaRubro(sec, meta) {
+  const kpi = `<div class="pkpi"><div><small>Estudiantes</small><b>${sec.est}</b></div><div><small>Pagaron</small><b>${sec.pag.length}</b></div><div><small>Pendientes</small><b style="color:${sec.pen.length ? '#c00' : '#1f3864'}">${sec.pen.length}</b></div><div><small>% pagado</small><b>${pct(sec.pag.length, sec.est)}</b></div><div><small>Monto recaudado</small><b>${money(sec.monto)}</b></div></div>`;
+  return `<div class="page">${membrete()}<div class="ptitle">Reporte de Pago de ${esc(meta.rubro)}</div><div class="psub">${esc(sec.titulo)} · Corte al ${fdate(meta.hasta)}</div>${kpi}
+    <p style="color:#38761d;font-weight:700;margin:8px 0 3px">■ Pagaron (${sec.pag.length})</p>
+    ${ptable([{ l: 'N°', w: '28px' }, 'Nombre del estudiante', { l: 'NIE', w: '70px' }, { l: 'Monto', w: '60px' }, { l: 'N° de recibo(s)', w: '110px' }, { l: 'Último pago', w: '70px' }], sec.pag.length ? sec.pag.map(p => `<tr><td class="c">${p.n}</td><td>${esc(p.e.nombre)}</td><td class="c">${esc(p.nie)}</td><td class="r">${money(p.monto)}</td><td class="c">${esc(p.recs)}</td><td class="c">${fdate(p.ult)}</td></tr>`) : ['<tr><td colspan="6"><i>Nadie ha pagado este rubro en el período seleccionado.</i></td></tr>'])}
+    <p style="color:#c00;font-weight:700;margin:10px 0 3px">■ Pendientes de pago (${sec.pen.length})</p>
+    ${ptable([{ l: 'N°', w: '28px' }, 'Nombre del estudiante', { l: 'NIE', w: '70px' }, { l: 'Estado', w: '80px' }], sec.pen.length ? sec.pen.map(p => `<tr><td class="c">${p.n}</td><td>${esc(p.e.nombre)}</td><td class="c">${esc(p.nie)}</td><td class="c" style="color:#c00">Pendiente</td></tr>`) : ['<tr><td colspan="4"><i>Sin pendientes: todos los estudiantes activos pagaron.</i></td></tr>'])}
+    ${sec.notas.map(n => `<p class="pnote">* ${esc(n)}</p>`).join('')}
+    ${firmasDoc('rubro')}
+    <div class="pfoot"><span>Período ${fdate(meta.desde)} - ${fdate(meta.hasta)}</span><span></span></div></div>`;
+}
+function paginaResumenRubro(secs, meta, ix) {
+  let tE = 0, tP = 0, tN = 0, tM = 0;
+  const rows = secs.map(x => { tE += x.est; tP += x.pag.length; tN += x.pen.length; tM += x.monto; return `<tr><td>${esc(x.titulo)}</td><td class="c">${x.est}</td><td class="c">${x.pag.length}</td><td class="c" style="color:${x.pen.length ? '#c00' : ''}">${x.pen.length}</td><td class="c">${pct(x.pag.length, x.est)}</td><td class="r">${money(x.monto)}</td></tr>`; });
+  const sinBD = ix.sinBD.filter(r => num(r['r_' + (CFG.rubros.find(rb => rb.l === meta.rubro) || {}).k]));
+  return `<div class="page">${membrete()}<div class="ptitle">Reporte de Pago de ${esc(meta.rubro)}</div><div class="psub">Resumen general · Corte al ${fdate(meta.hasta)}</div>
+    ${ptable(['Grado / Sección', 'Estudiantes', 'Pagaron', 'Pendientes', '% pagado', 'Monto'], rows, { foot: `<tr class="tot"><td>TOTAL</td><td class="c">${tE}</td><td class="c">${tP}</td><td class="c">${tN}</td><td class="c">${pct(tP, tE)}</td><td class="r">${money(tM)}</td></tr>` })}
+    ${secs.length > 1 ? '<p class="pnote">En las páginas siguientes se detalla cada sección por separado.</p>' : ''}
+    ${sinBD.length ? `<p class="pnote">* En el período hay ${sinBD.length} recibo(s) de este rubro a nombre de personas que no están en la base de estudiantes; no se incluyen arriba. Revise el Control de digitación.</p>` : ''}</div>`;
+}
+
+/* ---------- RESUMEN POR SECCIONES ---------- */
+defView('r:secciones', 'Resumen de aportes por sección', el => {
+  const st = Object.assign(stDef(), LS.get('rs', {}));
+  const draw = () => {
+    el.innerHTML = filtrosHtml(st, { btns: '<button class="btn" id="bX">⬇️ Excel</button><button class="btn pri" id="bPr">🖨️ Imprimir</button>' }) + '<div id="rsOut"></div>';
+    const ix = indicePagos(st.desde, st.hasta); const rbs = rubrosOn();
+    const secs = seccionesDe(ix.ests).map(s => {
+      const es = estDeSec(ix.ests, s); const t = {}; let tot = 0, meses = 0;
+      rbs.forEach(rb => t[rb.k] = 0);
+      es.forEach(e => (ix.pag.get(e._id) || []).forEach(r => { rbs.forEach(rb => t[rb.k] += num(r['r_' + rb.k])); tot += num(r.pago); meses += mesesAlimDe(r); }));
+      return { s, n: s.n, t, tot, meses };
+    });
+    const usados = rbs.filter(rb => secs.some(x => x.t[rb.k]));
+    const G = { n: 0, tot: 0, t: {} }; usados.forEach(rb => G.t[rb.k] = 0);
+    secs.forEach(x => { G.n += x.n; G.tot += x.tot; usados.forEach(rb => G.t[rb.k] += x.t[rb.k]); });
+    const head = ['Grado', 'Sección', 'Opción', 'Estud.', ...usados.map(r => r.l), 'TOTAL', 'Prom./est.', 'Nivel'];
+    const body = secs.map(x => [x.s.g, x.s.s, x.s.o, x.n, ...usados.map(rb => x.t[rb.k]), x.tot, x.n ? x.tot / x.n : 0, x.s.nivel]);
+    $('#rsOut', el).innerHTML = `<div class="tw"><table class="t"><thead><tr>${head.map(h => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${body.map(r => `<tr>${r.map((v, i) => `<td class="${i >= 3 && i < r.length - 1 ? 'num' : ''}">${i >= 4 && i < r.length - 1 ? (v ? money(v) : '') : esc(v)}</td>`).join('')}</tr>`).join('')}</tbody>
+      <tfoot><tr><td colspan="3">TOTAL</td><td class="num">${G.n}</td>${usados.map(rb => `<td class="num">${money(G.t[rb.k])}</td>`).join('')}<td class="num">${money(G.tot)}</td><td class="num">${money(G.n ? G.tot / G.n : 0)}</td><td></td></tr></tfoot></table></div>`;
+    $$('input', el).forEach(x => x.onchange = () => { leerFiltros(el, st); LS.set('rs', st); draw(); });
+    $('#bX', el).onclick = () => downloadTable([head, ...body], 'Resumen por secciones');
+    $('#bPr', el).onclick = () => Print.show('Resumen por secciones', `<div class="page land">${membrete()}<div class="ptitle">RESUMEN DE APORTES POR GRADO Y SECCIÓN</div><div class="psub">Del ${fdate(st.desde)} al ${fdate(st.hasta)}</div>${ptable(head, body.map(r => `<tr>${r.map((v, i) => `<td class="${i >= 3 ? 'r' : ''}">${i >= 4 && i < r.length - 1 ? (v ? nfmt(v) : '') : esc(v)}</td>`).join('')}</tr>`), { foot: `<tr class="tot"><td colspan="3">TOTAL</td><td class="r">${G.n}</td>${usados.map(rb => `<td class="r">${nfmt(G.t[rb.k])}</td>`).join('')}<td class="r">${money(G.tot)}</td><td class="r">${money(G.n ? G.tot / G.n : 0)}</td><td></td></tr>` })}</div>`);
+  };
+  draw(); return draw;
+});
+
+/* ---------- INGRESOS POR MES ---------- */
+defView('r:mes', 'Ingresos por mes', el => {
+  const rbs = rubrosOn();
+  const v = Store.all('recibos').filter(r => !isTrue(r.nulo));
+  const M = MESES.map((m, i) => { const t = {}; rbs.forEach(rb => t[rb.k] = 0); let pago = 0, n = 0; v.forEach(r => { const d = dobj(r.fecha); if (!d || d.getMonth() !== i) return; rbs.forEach(rb => t[rb.k] += num(r['r_' + rb.k])); pago += num(r.pago); n++; }); return { m, t, pago, n }; });
+  const usados = rbs.filter(rb => M.some(x => x.t[rb.k]));
+  const max = Math.max(1, ...M.map(x => x.pago)); const tot = M.reduce((a, x) => a + x.pago, 0);
+  const head = ['Mes', 'Recibos', ...usados.map(r => r.l), 'Total cobrado'];
+  const body = M.map(x => [cap(x.m), x.n, ...usados.map(rb => x.t[rb.k]), x.pago]);
+  el.innerHTML = `<div class="bar"><span class="muted">Año ${Store.year} · recibos no anulados</span><span class="sp"></span><button class="btn" id="bX">⬇️ Excel</button><button class="btn pri" id="bPr">🖨️ Imprimir</button></div>
+    <div class="card"><h3>Total cobrado por mes <small>· ${money(tot)} en el año</small></h3><div class="bars">${M.map(x => `<div class="row"><span>${cap(x.m)}</span><div class="tr"><i style="width:${x.pago / max * 100}%"></i></div><span class="num">${money(x.pago)}</span></div>`).join('')}</div></div>
+    <div class="tw"><table class="t"><thead><tr>${head.map(h => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${body.map(r => `<tr>${r.map((c, i) => `<td class="${i ? 'num' : ''}">${i > 1 ? (c ? money(c) : '') : esc(c)}</td>`).join('')}</tr>`).join('')}</tbody>
+    <tfoot><tr><td>TOTAL</td><td class="num">${M.reduce((a, x) => a + x.n, 0)}</td>${usados.map(rb => `<td class="num">${money(M.reduce((a, x) => a + x.t[rb.k], 0))}</td>`).join('')}<td class="num">${money(tot)}</td></tr></tfoot></table></div>`;
+  $('#bX', el).onclick = () => downloadTable([head, ...body], 'Ingresos por mes ' + Store.year);
+  $('#bPr', el).onclick = () => Print.show('Ingresos por mes', `<div class="page land">${membrete()}<div class="ptitle">RESUMEN DE INGRESOS MENSUALES ${Store.year}</div>${ptable(head, body.map(r => `<tr>${r.map((c, i) => `<td class="${i ? 'r' : ''}">${i > 1 ? (c ? nfmt(c) : '') : esc(c)}</td>`).join('')}</tr>`), { foot: `<tr class="tot"><td>TOTAL</td><td class="r">${M.reduce((a, x) => a + x.n, 0)}</td>${usados.map(rb => `<td class="r">${nfmt(M.reduce((a, x) => a + x.t[rb.k], 0))}</td>`).join('')}<td class="r">${money(tot)}</td></tr>` })}</div>`);
+});
+
+/* ---------- CONSTANCIA DE PAGOS ---------- */
+defView('r:constancia', 'Constancia de pagos', (el, p) => {
+  const st = { id: p.est || LS.get('constEst', ''), meses: '', cuota: CFG.alimentos.cuota, fecha: today(), modo: CFG.alimentos.modo || 'anual' };
+  const mesesReq = () => { const prev = CFG.alimentos.modo; CFG.alimentos.modo = st.modo; const n = mesesRequeridos(st.fecha); CFG.alimentos.modo = prev; return n; };
+  const draw = () => {
+    const e = Store.get('estudiantes', st.id);
+    el.innerHTML = `<div class="bar"><label class="f" style="flex:1"><span>Estudiante (nombre o NIE)</span><input class="in" id="cE" value="${esc(e ? e.nombre : '')}" placeholder="Escriba para buscar…"></label>
+      <label class="f"><span>Calcular pendientes</span><select class="in" id="cMo"><option value="anual" ${st.modo === 'anual' ? 'selected' : ''}>Todo el año (${mesesCobro().length} meses)</option><option value="fecha" ${st.modo === 'fecha' ? 'selected' : ''}>Hasta la fecha</option></select></label>
+      <label class="f"><span>Meses a pagar</span><input class="in" type="number" id="cM" value="${st.meses === '' ? mesesReq() : st.meses}" style="width:90px" title="Meses que se cobran: ${esc(listaMeses(mesesCobro()))}"></label>
+      <label class="f"><span>Cuota mensual $</span><input class="in" type="number" step="any" id="cC" value="${st.cuota}" style="width:110px"></label>
+      <label class="f"><span>Fecha</span><input class="in" type="date" id="cF" value="${st.fecha}"></label><button class="btn pri" id="cP" ${e ? '' : 'disabled'}>🖨️ Imprimir constancia</button></div><div id="cOut"></div>`;
+    attachAC($('#cE', el), REF.estudiantes, it => { st.id = it.row._id; LS.set('constEst', st.id); draw(); });
+    $('#cM', el).onchange = x => { st.meses = x.target.value; draw(); }; $('#cMo', el).onchange = x => { st.modo = x.target.value; st.meses = ''; draw(); }; $('#cC', el).onchange = x => { st.cuota = num(x.target.value); draw(); }; $('#cF', el).onchange = x => { st.fecha = x.target.value; draw(); };
+    if (!e) { $('#cOut', el).innerHTML = '<div class="empty">Busque un estudiante para ver su historial y generar la constancia.</div>'; return; }
+    const html = constanciaHtml(e, { meses: st.meses === '' ? mesesReq() : num(st.meses), cuota: st.cuota, fecha: st.fecha });
+    $('#cOut', el).innerHTML = `<div style="background:#525659;padding:16px;border-radius:10px;overflow:auto">${html}</div>`;
+    $('#cP', el).onclick = () => Print.show('Constancia - ' + e.nombre, html);
+  };
+  draw();
+});
+function constanciaHtml(e, o) {
+  const rs = (indicePagos().pag.get(e._id) || []).sort((a, b) => String(a.fecha).localeCompare(b.fecha));
+  const meses = r2(rs.reduce((a, r) => a + mesesAlimDe(r), 0)); const alim = rs.reduce((a, r) => a + num(r.r_alimentos), 0);
+  const tot = rs.reduce((a, r) => a + num(r.pago), 0); const falta = r2(Math.max(0, o.meses - meses));
+  const solv = falta < 0.001;
+  const dm = detalleMeses(meses); const pend = dm.pen.slice(0, Math.ceil(falta));
+  return `<div class="page">${membrete()}<div style="text-align:right">${flong(o.fecha)}</div><div class="ptitle" style="margin:14px 0">CONSTANCIA DE PAGOS REALIZADOS</div>
+    <table style="font-size:12px;margin-bottom:10px"><tr><td style="width:110px"><b>Estudiante:</b></td><td>${esc(String(e.nombre).toUpperCase())}</td><td style="width:60px"><b>NIE:</b></td><td>${esc(e.nie || '—')}</td></tr>
+    <tr><td><b>Grado:</b></td><td>${esc(e.grado)} ${e.opcion ? '· ' + esc(e.opcion) : ''}</td><td><b>Sección:</b></td><td>${esc(e.seccion)}</td></tr>
+    <tr><td><b>Responsable:</b></td><td>${esc(e.responsable || '—')}</td><td><b>DUI:</b></td><td>${esc(e.dui_resp || '—')}</td></tr>
+    <tr><td><b>Estado:</b></td><td>${esc(e.estado || '')}</td><td><b>Último pago:</b></td><td>${fdate(rs.length ? rs[rs.length - 1].fecha : '') || '—'}</td></tr></table>
+    <p class="ptxt">La Tesorería del ${esc(CFG.inst.organismo)} del ${esc(CFG.inst.nombre)} hace constar que el/la estudiante arriba mencionado(a) registra los pagos que se detallan en el anexo, con un total de <b>${money(tot)}</b>, de los cuales <b>${meses}</b> mes(es) corresponden a alimentos (${money(alim)}).</p>
+    <div style="border:2px solid ${solv ? '#2e7d32' : '#c62828'};color:${solv ? '#2e7d32' : '#c62828'};padding:8px;text-align:center;font-weight:700;font-size:14px;margin:10px 0">${solv ? `✔ SOLVENTE — ${nfmt(meses)} de ${o.meses} mes(es) de alimentos cancelados` : `✘ NO SOLVENTE — pendiente(s) ${nfmt(falta)} mes(es): ${money(falta * o.cuota)}`}</div>
+    <table style="font-size:11.5px;margin:-2px 0 10px;width:100%"><tr><td style="width:50%"><b>Meses de alimentos del año:</b> ${mesesCobro().length} (${esc(listaMeses(mesesCobro()))}) · cuota ${money(o.cuota)}</td><td><b>Pagados:</b> ${nfmt(meses)} de ${o.meses}${dm.cub.length ? ` — cubre ${esc(listaMeses(dm.cub))}` : ''}${dm.extra ? ` (+${nfmt(dm.extra)} adelantado)` : ''}</td></tr>
+    ${pend.length ? `<tr><td colspan="2" style="color:#c62828"><b>Meses pendientes:</b> ${esc(listaMeses(pend))}</td></tr>` : ''}</table>
+    <p class="ptxt">Y para los usos que estime conveniente, se extiende la presente en ${esc(CFG.inst.lugar)}, ${flong(o.fecha)}.</p>
+    ${firmasDoc('constancia', [['', 'Sello']])}
+    <div style="margin-top:22px"><b>DETALLE DE PAGOS REGISTRADOS (ANEXO)</b></div>
+    ${ptable(['N°', 'N° Recibo', 'Fecha', 'Concepto', 'Mes', 'Meses alim.', 'Alimentos $', 'Total recibo $'], rs.map((r, i) => `<tr><td class="c">${i + 1}</td><td class="c">${recNum(r)}</td><td class="c">${fdate(r.fecha)}</td><td>${esc(r.concepto)}${r.obs ? ' <i>(' + esc(r.obs) + ')</i>' : ''}</td><td>${esc(r.mes || mesDe(r.fecha))}</td><td class="c">${mesesAlimDe(r) ? nfmt(mesesAlimDe(r)) : ''}</td><td class="r">${num(r.r_alimentos) ? money(r.r_alimentos) : ''}</td><td class="r">${money(r.pago)}</td></tr>`), { foot: `<tr class="tot"><td colspan="5">TOTALES</td><td class="c">${nfmt(meses)}</td><td class="r">${money(alim)}</td><td class="r">${money(tot)}</td></tr>` })}</div>`;
+}
+
+/* ---------- INGRESOS Y CUADRE ---------- */
+function totalesIngreso(desde, hasta) {
+  const inR = (r, k = 'fecha') => { const f = toYMD(r[k]); return (!desde || f >= desde) && (!hasta || f <= hasta); };
+  const v = Store.all('recibos').filter(r => !isTrue(r.nulo) && inR(r));
+  const rb = {}; rubrosOn().forEach(x => rb[x.k] = v.reduce((a, r) => a + num(r['r_' + x.k]), 0));
+  const pago = v.reduce((a, r) => a + num(r.pago), 0), suma = Object.values(rb).reduce((a, b) => a + b, 0);
+  const enBanco = rubrosOn().filter(x => x.banco).reduce((a, x) => a + rb[x.k], 0);
+  const efectivo = suma - enBanco;
+  const don = Store.all('donaciones').filter(r => inR(r)).reduce((a, r) => a + num(r.cantidad), 0);
+  const caf = Store.all('cafetines').filter(r => inR(r)).reduce((a, r) => a + num(r.cantidad), 0);
+  const dep = Store.all('depositos').filter(r => inR(r)).reduce((a, r) => a + num(r.cantidad), 0);
+  const nr = Store.all('noremesado').filter(r => inR(r)).reduce((a, r) => a + num(r.monto), 0);
+  const dev = Store.all('devoluciones').filter(r => inR(r)).reduce((a, r) => a + num(r.cantidad), 0);
+  const arq = Store.all('arqueos').filter(a => a.caja === 'GENERAL').sort((a, b) => String(b.fecha).localeCompare(a.fecha) || num(b._upd) - num(a._upd))[0];
+  const ingresos = efectivo + (CFG.cuadre.incluirDonaciones ? don : 0);
+  const esperado = r2(ingresos - dep - nr - dev);
+  const niv = {}; v.forEach(r => { const n = r.grado ? (cicloDe(r.grado) || 'Sin grado') : 'Sin grado'; niv[n] = (niv[n] || 0) + num(r.pago); });
+  return { v, rb, pago, suma, enBanco, efectivo, don, caf, dep, nr, dev, arq, ingresos, esperado, niv };
+}
+/** Posición de caja general: compara lo que debe haber hoy con el último arqueo MÁS los movimientos
+    registrados después de ese arqueo (cobros, depósitos, devoluciones…). Así un depósito hecho
+    después de contar no aparece como faltante. */
+function posicionCaja() {
+  const T = totalesIngreso('', ''), arq = T.arq;
+  if (!arq) return { T, arq: null, contado: 0, delta: 0, enCaja: 0, dif: T.esperado, det: null };
+  let snap = null; try { snap = arq.snap ? JSON.parse(arq.snap) : null; } catch (e) { }
+  if (!snap) { const A = totalesIngreso('', toYMD(arq.fecha)); snap = { esp: A.esperado, ing: A.ingresos, dep: A.dep, nr: A.nr, dev: A.dev, aprox: 1 }; }
+  const det = { ing: r2(T.ingresos - num(snap.ing)), dep: r2(T.dep - num(snap.dep)), nr: r2(T.nr - num(snap.nr)), dev: r2(T.dev - num(snap.dev)) };
+  const delta = r2(T.esperado - num(snap.esp)), contado = num(arq.contado), enCaja = r2(contado + delta);
+  return { T, arq, contado, delta, enCaja, dif: r2(T.esperado - enCaja), det, aprox: !!snap.aprox };
+}
+const snapCaja = () => { const A = totalesIngreso('', ''); return JSON.stringify({ esp: A.esperado, ing: A.ingresos, dep: A.dep, nr: A.nr, dev: A.dev, t: Date.now() }); };
+defView('t:cuadre', 'Ingresos y cuadre', el => {
+  const st = Object.assign(stDef(), { desde: '', hasta: '' }, LS.get('cu', {}));
+  const draw = () => {
+    const T = totalesIngreso(st.desde, st.hasta); const rbs = rubrosOn();
+    const PC = posicionCaja(); const ef = PC.enCaja; const dif = st.desde || st.hasta ? r2(T.esperado - ef) : PC.dif;
+    const movTxt = PC.det ? [PC.det.ing ? `cobrado ${PC.det.ing > 0 ? '+' : ''}${money(PC.det.ing)}` : '', PC.det.dep ? `depositado −${money(PC.det.dep)}` : '', PC.det.nr ? `no remesado −${money(PC.det.nr)}` : '', PC.det.dev ? `devoluciones −${money(PC.det.dev)}` : ''].filter(Boolean).join(' · ') : '';
+    el.innerHTML = filtrosHtml(st, { btns: '<button class="btn pri" id="bPr">🖨️ Imprimir</button>' }) + `
+    <div class="kpis"><div class="kpi"><div class="l">Cobrado en recibos</div><div class="v">${money(T.pago)}</div><div class="s">${T.v.length} recibos</div></div>
+      <div class="kpi"><div class="l">Donaciones</div><div class="v">${money(T.don)}</div></div><div class="kpi"><div class="l">Cafetines (banco)</div><div class="v">${money(T.caf)}</div></div>
+      <div class="kpi"><div class="l">Depositado</div><div class="v">${money(T.dep)}</div></div><div class="kpi ${Math.abs(dif) < 0.01 ? 'ok' : 'bad'}"><div class="l">Diferencia de caja</div><div class="v">${money(dif)}</div><div class="s">${Math.abs(dif) < 0.01 ? '✔ Cuadra' : dif > 0 ? 'FALTANTE' : 'SOBRANTE'}</div></div></div>
+    <div class="grid g2"><div class="card"><h3>1. Ingresos por concepto</h3><table class="t"><thead><tr><th>Concepto</th><th class="r">Monto</th><th class="r">%</th><th class="r">Unidades</th></tr></thead><tbody>
+      ${rbs.filter(rb => T.rb[rb.k]).map(rb => `<tr><td>${esc(rb.l)}</td><td class="num">${money(T.rb[rb.k])}</td><td class="num">${pct(T.rb[rb.k], T.suma)}</td><td class="num">${rb.meses ? T.v.reduce((a, r) => a + num(r.meses_alim), 0) + ' meses' : rb.p ? nfmt(T.rb[rb.k] / rb.p) : ''}</td></tr>`).join('')}
+      <tr><td><b>Suma por rubros</b></td><td class="num"><b>${money(T.suma)}</b></td><td></td><td></td></tr>
+      <tr><td>Donaciones económicas ${CFG.cuadre.incluirDonaciones ? '' : '(no se suman al cuadre)'}</td><td class="num">${money(T.don)}</td><td></td><td></td></tr>
+      <tr><td>Alquiler de cafetines (se paga en banco)</td><td class="num">${money(T.caf)}</td><td></td><td></td></tr></tbody></table></div>
+    <div class="card"><h3>2. Cuadre de caja</h3><table class="t"><tbody>
+      <tr><td>Cobrado en recibos según rubros</td><td class="num">${money(T.suma)}</td></tr>
+      ${T.enBanco ? `<tr><td>(−) Rubros pagados en banco (cafetines, etc.)</td><td class="num">${money(T.enBanco)}</td></tr>` : ''}
+      ${CFG.cuadre.incluirDonaciones ? `<tr><td>(+) Donaciones económicas</td><td class="num">${money(T.don)}</td></tr>` : ''}
+      <tr><td>(−) Depositado en banco</td><td class="num">${money(T.dep)}</td></tr><tr><td>(−) No remesado</td><td class="num">${money(T.nr)}</td></tr><tr><td>(−) Devoluciones</td><td class="num">${money(T.dev)}</td></tr>
+      <tr><td><b>Efectivo que debe haber</b></td><td class="num"><b>${money(T.esperado)}</b></td></tr>
+      ${PC.arq ? `<tr><td style="padding-left:22px" class="muted">Contado en el último arqueo · ${fdate(PC.arq.fecha)}</td><td class="num muted">${money(PC.contado)}</td></tr>
+      <tr><td style="padding-left:22px" class="muted">Movimientos registrados después del arqueo${movTxt ? ` <small>(${movTxt})</small>` : ''}${PC.aprox ? ' <small title="Este arqueo se guardó antes de esta mejora: se toman como posteriores los movimientos con fecha después del arqueo">ⓘ</small>' : ''}</td><td class="num muted">${PC.delta >= 0 ? '+' : ''}${money(PC.delta)}</td></tr>` : ''}
+      <tr><td>(−) Efectivo que debe estar en caja ${PC.arq ? '(último arqueo + movimientos posteriores)' : '(sin arqueo)'}</td><td class="num">${money(ef)}</td></tr>
+      <tr><td><b>DIFERENCIA</b></td><td class="num ${Math.abs(dif) < 0.01 ? 'ok-t' : 'bad-t'}"><b>${money(dif)}</b></td></tr></tbody></table>
+      <p class="muted" style="font-size:12px">Positivo = falta dinero · Negativo = sobra dinero. <a data-go="t:arqueo">Hacer arqueo ahora →</a></p>
+      <h3 style="margin-top:14px">3. Control</h3><table class="t"><tbody><tr><td>Total cobrado (Pago)</td><td class="num">${money(T.pago)}</td></tr><tr><td>Suma de rubros</td><td class="num">${money(T.suma)}</td></tr><tr><td><b>Diferencia</b></td><td class="num ${Math.abs(T.pago - T.suma) < .01 ? 'ok-t' : 'warn-t'}"><b>${money(T.pago - T.suma)}</b></td></tr></tbody></table></div></div>
+    <div class="card"><h3>4. Cobrado por nivel</h3><div class="bars">${Object.entries(T.niv).sort((a, b) => b[1] - a[1]).map(([n, m]) => `<div class="row"><span>${esc(n)}</span><div class="tr"><i style="width:${m / Math.max(1, T.pago) * 100}%"></i></div><span class="num">${money(m)} · ${pct(m, T.pago)}</span></div>`).join('')}</div></div>`;
+    $$('input', el).forEach(x => x.onchange = () => { leerFiltros(el, st); LS.set('cu', st); draw(); });
+    $$('[data-go]', el).forEach(a => a.onclick = () => go(a.dataset.go));
+    $('#bPr', el).onclick = () => Print.show('Ingresos y cuadre', `<div class="page">${membrete()}<div class="ptitle">INGRESOS ${Store.year} · RESUMEN Y CUADRE</div><div class="psub">${st.desde || st.hasta ? `Del ${fdate(st.desde) || 'inicio'} al ${fdate(st.hasta) || 'cierre'}` : 'Todo el año ' + Store.year}</div>
+      <b>1. INGRESOS POR CONCEPTO</b>${ptable(['Concepto', 'Monto', '%'], rbs.filter(rb => T.rb[rb.k]).map(rb => `<tr><td>${esc(rb.l)}</td><td class="r">${money(T.rb[rb.k])}</td><td class="r">${pct(T.rb[rb.k], T.suma)}</td></tr>`).concat([`<tr><td>Donaciones económicas</td><td class="r">${money(T.don)}</td><td></td></tr>`, `<tr><td>Alquiler de cafetines</td><td class="r">${money(T.caf)}</td><td></td></tr>`]), { foot: `<tr class="tot"><td>SUMA POR RUBROS</td><td class="r">${money(T.suma)}</td><td></td></tr>` })}
+      <br><b>2. CUADRE DE CAJA</b>${ptable(['Concepto', 'Monto'], [['Cobrado según rubros', T.suma], ...(T.enBanco ? [['(−) Rubros pagados en banco', T.enBanco]] : []), ...(CFG.cuadre.incluirDonaciones ? [['(+) Donaciones', T.don]] : []), ['(−) Depositado en banco', T.dep], ['(−) No remesado', T.nr], ['(−) Devoluciones', T.dev], ['Efectivo que debe haber', T.esperado], ['(−) Efectivo en caja (último arqueo ' + (PC.arq ? fdate(PC.arq.fecha) + ' ' + money(PC.contado) : '—') + (PC.delta ? ' y movimientos posteriores ' + money(PC.delta) : '') + ')', ef]].map(([a, b]) => `<tr><td>${a}</td><td class="r">${money(b)}</td></tr>`), { foot: `<tr class="tot"><td>DIFERENCIA ${Math.abs(dif) < .01 ? '✔ CUADRA' : dif > 0 ? '(FALTANTE)' : '(SOBRANTE)'}</td><td class="r">${money(dif)}</td></tr>` })}
+      <br><b>3. COBRADO POR NIVEL</b>${ptable(['Nivel', 'Monto', '%'], Object.entries(T.niv).map(([n, m]) => `<tr><td>${esc(n)}</td><td class="r">${money(m)}</td><td class="r">${pct(m, T.pago)}</td></tr>`))}
+      ${firmasDoc('cuadre')}</div>`);
+  };
+  draw(); return draw;
+});
+
+/* ---------- ARQUEO (general y caja chica) ---------- */
+const DENOM = [['Billete $100', 100], ['Billete $50', 50], ['Billete $20', 20], ['Billete $10', 10], ['Billete $5', 5], ['Billete $1', 1], ['Moneda $1', 1], ['Moneda $0.25', .25], ['Moneda $0.10', .1], ['Moneda $0.05', .05], ['Moneda $0.01', .01]];
+function vistaArqueo(el, p) {
+  const prev = p.id ? Store.get('arqueos', p.id) : null;
+  let caja = prev ? prev.caja : (p.caja || 'GENERAL');
+  let cnt = {}; try { cnt = prev && prev.conteo ? JSON.parse(prev.conteo) : {}; } catch (e) { }
+  let manual = prev ? num(prev.esperado) : null;
+  let notas = prev ? prev.notas || '' : '', fecha = prev ? prev.fecha : today();
+  const ultimo = c => Store.all('arqueos').filter(a => a.caja === c).sort((a, b) => String(b.fecha).localeCompare(a.fecha) || num(b._upd) - num(a._upd))[0];
+  const esperadoAuto = () => caja === 'CAJA CHICA' ? prepCaja(Store.all('cajachica')).saldo : totalesIngreso('', '').esperado;
+  const vista = (extra) => go(caja === 'CAJA CHICA' ? 'c:arqueo' : 't:arqueo', Object.assign({ caja }, extra || {}));
+  const draw = () => {
+    const contado = r2(DENOM.reduce((s, [l, v]) => s + num(cnt[l]) * v, 0));
+    const esp = manual !== null ? manual : esperadoAuto();
+    const dif = r2(contado - esp); const res = Math.abs(dif) < 0.01 ? '✔ CUADRA' : dif < 0 ? 'FALTANTE de ' + money(-dif) : 'SOBRANTE de ' + money(dif);
+    const ult = ultimo(caja);
+    el.innerHTML = `<div class="bar"><div class="chips">${['GENERAL', 'CAJA CHICA'].map(c => `<span class="chip ${c === caja ? 'on' : ''}" data-c="${c}">${c === 'GENERAL' ? 'Caja general (ingresos)' : 'Caja chica'}</span>`).join('')}</div><span class="sp"></span>
+      <label class="f"><span>Fecha</span><input type="date" class="in" id="aF" value="${fecha}"></label></div>
+    ${prev ? `<div class="alert info">📂 Está viendo el arqueo guardado del <b>${fdate(prev.fecha)}</b> (${esc(prev.resultado || '')}). Puede corregirlo y <b>guardar cambios</b>, o usarlo de base y <b>guardar como arqueo nuevo</b>. <button class="btn sm" id="aNw" style="margin-left:8px">+ Empezar arqueo nuevo</button></div>`
+      : ult ? `<div class="alert info">Último arqueo de esta caja: <b>${fdate(ult.fecha)}</b> · contado ${money(ult.contado)} · ${esc(ult.resultado || '')}.</div>` : ''}
+    <div class="grid g2"><div class="card"><h3 style="display:flex;align-items:center;gap:8px">Conteo de efectivo<span class="sp"></span><button class="btn sm" id="aU" ${ult ? '' : 'disabled'} title="Cargar las cantidades del último arqueo guardado">📂 Traer último arqueo</button><button class="btn sm" id="aL" title="Borrar las cantidades escritas">🧹 Limpiar</button></h3><table class="t denom"><thead><tr><th>Denominación</th><th class="r">Cantidad</th><th class="r">Subtotal</th></tr></thead><tbody>
+      ${DENOM.map(([l, v]) => `<tr><td>${l}</td><td class="r"><input class="in" type="number" min="0" data-d="${l}" value="${cnt[l] || ''}"></td><td class="num">${money(num(cnt[l]) * v)}</td></tr>`).join('')}</tbody>
+      <tfoot><tr><td>EFECTIVO CONTADO</td><td></td><td class="num">${money(contado)}</td></tr></tfoot></table></div>
+    <div class="card"><h3>Resultado</h3><table class="t"><tbody>
+      ${caja === 'CAJA CHICA' ? `<tr><td>Fondo asignado</td><td class="num">${money(CFG.caja.fondo)}</td></tr><tr><td>Gastos documentados en caja actual</td><td class="num">${money(num(CFG.caja.fondo) - esperadoAuto())}</td></tr>` : `<tr><td colspan="2" class="muted" style="font-size:12px">Esperado = cobrado según rubros (sin los pagados en banco) ${CFG.cuadre.incluirDonaciones ? '+ donaciones ' : ''}− depósitos − no remesado − devoluciones (año ${Store.year}). Registre los depósitos que haga después de contar: el cuadre los descuenta del efectivo contado.</td></tr>`}
+      <tr><td>Efectivo que debe haber ${manual !== null ? '<span class="tag warn">manual</span>' : ''}</td><td class="r"><input class="in num" type="number" step="any" id="aE" value="${esp}" style="width:130px"></td></tr>
+      <tr><td>Efectivo contado</td><td class="num">${money(contado)}</td></tr>
+      <tr><td><b>DIFERENCIA (contado − debe haber)</b></td><td class="num ${Math.abs(dif) < .01 ? 'ok-t' : 'bad-t'}"><b>${money(dif)}</b></td></tr></tbody></table>
+      <div class="alert ${Math.abs(dif) < .01 ? 'ok' : 'bad'}" style="margin-top:12px;font-size:16px;font-weight:700;text-align:center">${res}</div>
+      <label class="f"><span>Notas / explicación de diferencias</span><textarea class="in" id="aN" rows="4">${esc(notas)}</textarea></label>
+      <div class="bar" style="margin-top:10px"><button class="btn" id="aR">↺ Esperado automático</button><span class="sp"></span><button class="btn" id="aP">🖨️ Imprimir</button>${prev ? '<button class="btn" id="aSn">💾 Guardar como arqueo nuevo</button><button class="btn pri" id="aS">💾 Guardar cambios</button>' : '<button class="btn pri" id="aS">💾 Guardar arqueo</button>'}</div></div></div>`;
+    $$('[data-c]', el).forEach(c => c.onclick = () => { if (prev) { caja = c.dataset.c; vista(); return; } caja = c.dataset.c; manual = null; draw(); });
+    $$('[data-d]', el).forEach(i => i.onchange = () => { cnt[i.dataset.d] = num(i.value); draw(); const nx = $(`[data-d="${i.dataset.d}"]`, el).closest('tr').nextElementSibling; if (nx) $('input', nx).focus(); });
+    $('#aE', el).onchange = e => { manual = num(e.target.value); draw(); };
+    $('#aR', el).onclick = () => { manual = null; draw(); };
+    $('#aN', el).oninput = e => { notas = e.target.value; };
+    $('#aF', el).onchange = e => { fecha = e.target.value; };
+    $('#aL', el).onclick = async () => { if (Object.values(cnt).some(Boolean) && !(await confirmBox('¿Borrar todas las cantidades escritas en el conteo?', 'Limpiar'))) return; cnt = {}; draw(); const f = $('[data-d]', el); f && f.focus(); };
+    $('#aU', el).onclick = () => { const u = ultimo(caja); if (!u) return; let c = {}; try { c = JSON.parse(u.conteo || '{}'); } catch (e) { } cnt = c; notas = notas || ''; draw(); toast(`Se cargaron las cantidades del arqueo del ${fdate(u.fecha)} (${money(u.contado)})`, 'ok'); };
+    const nw = $('#aNw', el); if (nw) nw.onclick = () => vista();
+    const rec = (nuevo) => ({ _id: prev && !nuevo ? prev._id : undefined, fecha: $('#aF', el).value, caja, contado, esperado: esp, diferencia: dif, resultado: res, conteo: JSON.stringify(cnt), notas: $('#aN', el).value, snap: caja === 'GENERAL' ? (prev && !nuevo && prev.snap ? prev.snap : snapCaja()) : '' });
+    const guardar = async nuevo => { if (!contado && !(await confirmBox('El conteo está en $0.00. ¿Guardar el arqueo así?', 'Guardar'))) return; const r = await Store.save('arqueos', rec(nuevo)); toast('Arqueo guardado ✔', 'ok'); go(caja === 'CAJA CHICA' ? 'c:arqueo' : 't:arqueo', { caja, id: r._id }); };
+    $('#aS', el).onclick = () => guardar(false);
+    const sn = $('#aSn', el); if (sn) sn.onclick = () => guardar(true);
+    $('#aP', el).onclick = () => { const r = rec(); Print.show('Arqueo de ' + caja.toLowerCase(), `<div class="page">${membrete()}<div class="ptitle">ARQUEO DE ${caja === 'GENERAL' ? 'CAJA GENERAL' : 'CAJA CHICA'}</div><div class="psub">Fecha del arqueo: ${flong(r.fecha)}</div>
+      <div style="display:flex;gap:20px"><div style="flex:1">${ptable(['Denominación', 'Cantidad', 'Subtotal'], DENOM.map(([l, v]) => `<tr><td>${l}</td><td class="c">${num(cnt[l]) || ''}</td><td class="r">${money(num(cnt[l]) * v)}</td></tr>`), { foot: `<tr class="tot"><td colspan="2">EFECTIVO CONTADO</td><td class="r">${money(contado)}</td></tr>` })}</div>
+      <div style="flex:1">${ptable(['Concepto', 'Monto'], [['Efectivo que debe haber', esp], ['Efectivo contado', contado], ['Diferencia', dif]].map(([a, b]) => `<tr><td>${a}</td><td class="r">${money(b)}</td></tr>`))}<p style="font-size:14px;font-weight:700;text-align:center;border:2px solid #1f3864;padding:6px">${esc(res)}</p>${r.notas ? `<p><b>Notas:</b> ${esc(r.notas)}</p>` : ''}</div></div>
+      ${firmasDoc('arqueo')}</div>`); };
+  };
+  draw();
+}
+defView('t:arqueo', 'Arqueo de caja', (el, p) => vistaArqueo(el, p));
+defView('c:arqueo', 'Arqueo de caja chica', (el, p) => vistaArqueo(el, Object.assign({ caja: 'CAJA CHICA' }, p)));
+/* ---------- ARRENDATARIOS: ESTADO DE CUENTA ---------- */
+const MESES_CAP = MESES.map(cap);
+function estadoCuentaArr() {
+  const y = Store.year, hoy = dobj(today());
+  const ultimo = y < hoy.getFullYear() ? 12 : y > hoy.getFullYear() ? 0 : hoy.getMonth() + 1;
+  const pagos = Store.all('cafetines');
+  const out = {};
+  Store.all('arrendatarios').forEach(a => {
+    const ini = dobj(a.inicio), fin = dobj(a.fin);
+    let desde = 1, hasta = ultimo;
+    if (ini) { if (ini.getFullYear() > y) desde = 13; else if (ini.getFullYear() === y) desde = ini.getMonth() + 1; }
+    if (fin) { if (fin.getFullYear() < y) hasta = 0; else if (fin.getFullYear() === y) hasta = Math.min(hasta, fin.getMonth() + 1); }
+    if (a.estado === 'INACTIVO' && !a.fin) hasta = 0;
+    const meses = Array(12).fill(0); let pag = 0; const lista = [];
+    pagos.forEach(pg => {
+      if (!(pg.arr_id === a._id || (!pg.arr_id && norm(pg.nombre) === norm(a.nombre)))) return;
+      let m = MESES.indexOf(norm(pg.mes)); if (m < 0) { const d = dobj(pg.fecha); m = d ? d.getMonth() : -1; }
+      if (m >= 0) meses[m] += num(pg.cantidad);
+      pag += num(pg.cantidad); lista.push(pg);
+    });
+    const due = Math.max(0, hasta - desde + 1);
+    const esp = r2(due * num(a.cuota));
+    const pend = []; for (let m = desde; m <= hasta; m++) if (meses[m - 1] + 0.004 < num(a.cuota)) pend.push(m);
+    out[a._id] = { a, meses, desde, hasta, esp, pag: r2(pag), saldo: r2(esp - pag), pend, lista: lista.sort((x, z) => String(x.fecha).localeCompare(z.fecha)) };
+  });
+  return out;
+}
+defView('t:arrcuenta', 'Estado de cuenta de arrendatarios', (el, p) => {
+  let cat = LS.get('arrCat', '');
+  const draw = () => {
+    const ec = estadoCuentaArr();
+    let filas = Object.values(ec).filter(x => !cat || x.a.categoria === cat).sort((a, b) => String(a.a.categoria).localeCompare(b.a.categoria) || String(a.a.nombre).localeCompare(b.a.nombre));
+    if (p.id) filas = filas.filter(x => x.a._id === p.id);
+    const cats = [...new Set(Store.all('arrendatarios').map(a => a.categoria).filter(Boolean))];
+    const celda = (x, m) => { const v = x.meses[m - 1], c = num(x.a.cuota); const due = m >= x.desde && m <= x.hasta; if (v + 0.004 >= c && v) return `<td class="c ok-t" title="${money(v)}">✔</td>`; if (v) return `<td class="c warn-t" title="Abono ${money(v)}">◐</td>`; return due ? `<td class="c bad-t" title="Pendiente">✘</td>` : '<td class="c muted">·</td>'; };
+    const T = k => filas.reduce((s, x) => s + num(x[k]), 0);
+    el.innerHTML = `<div class="bar"><div class="chips"><span class="chip ${!cat ? 'on' : ''}" data-c="">Todas las categorías</span>${cats.map(c => `<span class="chip ${c === cat ? 'on' : ''}" data-c="${esc(c)}">${esc(c)}</span>`).join('')}</div>
+      ${p.id ? '<button class="btn" id="aAll">← Ver todos</button>' : ''}<span class="sp"></span><button class="btn" id="aNew">+ Arrendatario</button><button class="btn" id="aPay">+ Registrar pago</button><button class="btn pri" id="aPr">🖨️ Imprimir</button></div>
+      <div class="kpis"><div class="kpi"><div class="l">Arrendatarios</div><div class="v">${filas.length}</div></div><div class="kpi"><div class="l">Esperado a la fecha</div><div class="v">${money(T('esp'))}</div></div><div class="kpi ok"><div class="l">Pagado</div><div class="v">${money(T('pag'))}</div></div><div class="kpi ${T('saldo') > 0.004 ? 'bad' : 'ok'}"><div class="l">Saldo pendiente</div><div class="v">${money(T('saldo'))}</div></div></div>
+      ${filas.length ? `<div class="tw"><table class="t"><thead><tr><th>Arrendatario</th><th>Categoría</th><th class="r">Cuota</th>${MESES_CAP.map(m => `<th class="c">${m.slice(0, 3)}</th>`).join('')}<th class="r">Esperado</th><th class="r">Pagado</th><th class="r">Saldo</th><th></th></tr></thead><tbody>
+      ${filas.map(x => `<tr data-a="${x.a._id}"><td><b>${esc(x.a.nombre)}</b><br><small class="muted">${esc(x.a.espacio || '')}${x.a.notas ? ' 📝' : ''}</small></td><td>${esc(x.a.categoria || '')}</td><td class="num">${money(x.a.cuota)}</td>${Array.from({ length: 12 }, (_, i) => celda(x, i + 1)).join('')}<td class="num">${money(x.esp)}</td><td class="num">${money(x.pag)}</td><td class="num"><b class="${x.saldo > 0.004 ? 'bad-t' : 'ok-t'}">${money(x.saldo)}</b></td>
+        <td class="act"><button class="btn sm" data-pay>+ Pago</button> <button class="btn sm" data-carta ${x.saldo > 0.004 ? '' : 'disabled'}>✉️ Carta</button></td></tr>`).join('')}</tbody></table></div>
+      <p class="muted" style="font-size:12px">✔ pagado · ◐ abono parcial · ✘ pendiente · se cobra desde el inicio del contrato hasta el mes actual (o el fin del contrato). El mes del pago se toma de “Mes que cancela”.</p>`
+      : `<div class="empty">No hay arrendatarios. Agregue cafetines, chalets o locales con <b>+ Arrendatario</b>.</div>`}
+      ${p.id && filas[0] ? `<div class="card"><h3>Pagos registrados de ${esc(filas[0].a.nombre)}</h3><table class="t"><thead><tr><th>Mes</th><th>Fecha</th><th>Recibo</th><th>Comprobante</th><th class="r">Cantidad</th><th>Obs.</th></tr></thead><tbody>${filas[0].lista.map(pg => `<tr><td>${esc(pg.mes || '')}</td><td>${fdate(pg.fecha)}</td><td>${esc(pg.recibo || '')}</td><td>${esc(pg.comprobante || '')}</td><td class="num">${money(pg.cantidad)}</td><td>${esc(pg.obs || '')}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">Sin pagos</td></tr>'}</tbody></table></div>` : ''}`;
+    $$('[data-c]', el).forEach(c => c.onclick = () => { cat = c.dataset.c; LS.set('arrCat', cat); draw(); });
+    const all = $('#aAll', el); if (all) all.onclick = () => go('t:arrcuenta');
+    $('#aNew', el).onclick = () => openForm('arrendatarios', null, { onDone: draw });
+    $('#aPay', el).onclick = () => openPagoArr({}, draw);
+    $$('tr[data-a]', el).forEach(tr => tr.onclick = e => {
+      const x = ec[tr.dataset.a]; const a = x.a;
+      if (e.target.dataset.pay !== undefined) { openPagoArr({ arr_id: a._id, meses: x.pend }, draw); return; }
+      if (e.target.dataset.carta !== undefined) { const tpl = Store.all('plantillas').find(t => /cobro/i.test(t.nombre)); const meses = x.pend.map(m => MESES[m - 1]).join(', '); go('d:generar', { id: tpl && tpl._id, datos: { destinatario: a.nombre, concepto: 'arrendamiento del ' + String(a.categoria || 'local').toLowerCase() + (a.espacio ? ' (' + a.espacio + ')' : ''), detalle: `Según nuestros registros, tiene pendiente(s) ${x.pend.length} mes(es) (${meses}) por un total de ${money(x.saldo)}, a razón de ${money(a.cuota)} mensuales.` } }); return; }
+      if (!p.id) go('t:arrcuenta', { id: a._id }); else openForm('arrendatarios', a, { onDone: draw });
+    });
+    $('#aPr', el).onclick = () => Print.show('Estado de cuenta de arrendatarios', estadoArrImpreso(filas, cat));
+  };
+  draw(); return draw;
+});
+
+/** Informe impreso del estado de cuenta: resumen, cuadro por meses y detalle de cada arrendatario */
+function estadoArrImpreso(filas, cat) {
+  const T = k => r2(filas.reduce((s, x) => s + num(x[k]), 0));
+  const alDia = filas.filter(x => x.saldo <= 0.004).length, conSaldo = filas.length - alDia;
+  const pctCob = T('esp') ? Math.min(100, T('pag') / T('esp') * 100) : 100;
+  const estMes = (x, m) => { const v = x.meses[m - 1], c = num(x.a.cuota), due = m >= x.desde && m <= x.hasta; return !due && !v ? 'no' : v + 0.004 >= c && v ? 'ok' : v ? 'abono' : 'pend'; };
+  const mark = { ok: '<b style="color:#2e7d32">✔</b>', abono: '<b style="color:#b26a00">◐</b>', pend: '<b style="color:#c00">✘</b>', no: '' };
+  const cuadro = ptable(['Arrendatario', 'Categoría', 'Cuota', ...MESES_CAP.map(m => m.slice(0, 3)), 'Esperado', 'Pagado', 'Saldo'], filas.map(x => `<tr><td>${esc(x.a.nombre)}${x.a.espacio ? '<br><small>' + esc(x.a.espacio) + '</small>' : ''}</td><td>${esc(x.a.categoria || '')}</td><td class="r">${money(x.a.cuota)}</td>${Array.from({ length: 12 }, (_, i) => { const m = i + 1, v = x.meses[i], e = estMes(x, m); return `<td class="c" style="${e === 'pend' ? 'background:#fdecea' : e === 'abono' ? 'background:#fff4e0' : ''}">${v ? nfmt(v) : mark[e]}</td>`; }).join('')}<td class="r">${money(x.esp)}</td><td class="r">${money(x.pag)}</td><td class="r"><b style="color:${x.saldo > 0.004 ? '#c00' : '#2e7d32'}">${money(x.saldo)}</b></td></tr>`).concat([`<tr class="tot"><td colspan="15">TOTAL</td><td class="r">${money(T('esp'))}</td><td class="r">${money(T('pag'))}</td><td class="r">${money(T('saldo'))}</td></tr>`]));
+  const ordMes = pg => { const m = MESES.indexOf(norm(pg.mes)); return m < 0 ? 99 : m; };
+  const detalle = x => {
+    const a = x.a, c = num(a.cuota), ult = x.lista.length ? x.lista[x.lista.length - 1] : null;
+    const mesesDue = []; for (let m = x.desde; m <= x.hasta; m++) mesesDue.push(m);
+    let acum = 0;
+    const filasMes = mesesDue.map(m => { const v = r2(x.meses[m - 1]), sal = r2(Math.max(0, c - v)); acum = r2(acum + sal); const e = estMes(x, m); return `<tr style="${e === 'pend' ? 'background:#fdecea' : e === 'abono' ? 'background:#fff4e0' : ''}"><td>${MESES_CAP[m - 1]}</td><td class="r">${money(c)}</td><td class="r">${v ? money(v) : '—'}</td><td class="r">${sal ? money(sal) : '—'}</td><td class="r">${money(acum)}</td><td class="c">${{ ok: 'Pagado', abono: 'Abono parcial', pend: 'Pendiente' }[e] || ''}</td></tr>`; });
+    const pagosFuera = x.meses.reduce((s, v, i) => s + (i + 1 < x.desde || i + 1 > x.hasta ? v : 0), 0);
+    const pagos = x.lista.slice().sort((p, q) => ordMes(p) - ordMes(q) || String(p.fecha).localeCompare(q.fecha));
+    return `<div class="arr-det" style="margin-top:16px;border:1px solid #9bc2e6;border-radius:4px;padding:8px 10px">
+      <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;border-bottom:1px solid #9bc2e6;padding-bottom:5px;margin-bottom:6px">
+        <div><b style="font-size:13px">${esc(a.nombre)}</b> · ${esc(a.categoria || '')}${a.espacio ? ' · ' + esc(a.espacio) : ''} · <b style="color:${a.estado === 'INACTIVO' ? '#c00' : '#2e7d32'}">${esc(a.estado || 'ACTIVO')}</b></div>
+        <div style="font-size:10.5px">Cuota mensual <b>${money(c)}</b>${a.dia_pago ? ` · pagar antes del día <b>${esc(a.dia_pago)}</b>` : ''}${a.forma ? ' · ' + esc(a.forma) : ''}</div></div>
+      <table style="width:100%;font-size:10.5px;margin-bottom:6px"><tr><td><b>Contrato:</b> ${a.inicio ? fdate(a.inicio) : '—'} al ${a.fin ? fdate(a.fin) : 'indefinido'}</td><td><b>DUI:</b> ${esc(a.dui || '—')}</td><td><b>Teléfono:</b> ${esc(a.telefono || '—')}</td><td><b>Último pago:</b> ${ult ? fdate(ult.fecha) + (ult.mes ? ' (' + esc(ult.mes) + ')' : '') : '—'}</td></tr>
+        <tr><td><b>Meses a cobrar en ${Store.year}:</b> ${mesesDue.length ? `${MESES[x.desde - 1]} a ${MESES[x.hasta - 1]} (${mesesDue.length})` : 'ninguno'}</td><td><b>Esperado:</b> ${money(x.esp)}</td><td><b>Pagado:</b> ${money(x.pag)}</td><td><b>Saldo:</b> <b style="color:${x.saldo > 0.004 ? '#c00' : '#2e7d32'}">${money(x.saldo)}</b></td></tr></table>
+      ${x.pend.length ? `<div style="background:#fdecea;border-left:4px solid #c00;padding:4px 8px;font-size:11px;margin-bottom:6px"><b>Meses pendientes (${x.pend.length}):</b> ${esc(listaMeses(x.pend))} · <b>${money(x.saldo)}</b></div>` : `<div style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:4px 8px;font-size:11px;margin-bottom:6px"><b>✔ Al día</b> con sus pagos${x.saldo < -0.004 ? ` · pagado por adelantado ${money(-x.saldo)}` : ''}.</div>`}
+      <div style="display:flex;gap:14px;align-items:flex-start">
+        <div style="flex:1">${ptable(['Mes', 'Cuota', 'Pagado', 'Saldo del mes', 'Saldo acumulado', 'Estado'], filasMes.length ? filasMes : ['<tr><td colspan="6" class="c">Sin meses a cobrar</td></tr>'])}${pagosFuera ? `<div style="font-size:10px;margin-top:3px">Incluye ${money(pagosFuera)} pagados por meses fuera del periodo a cobrar (adelantos).</div>` : ''}</div>
+        <div style="flex:1.25">${ptable(['Mes que cancela', 'Fecha recibido', 'Fecha en banco', 'Recibo', 'Comprobante', 'Cantidad'], (pagos.length ? pagos.map(pg => `<tr><td>${esc(pg.mes || '')}</td><td class="c">${fdate(pg.fecha)}</td><td class="c">${fdate(pg.fecha_banco)}</td><td class="c">${esc(pg.recibo || '')}</td><td class="c">${esc(pg.comprobante || '')}</td><td class="r">${money(pg.cantidad)}</td></tr>${pg.obs ? `<tr><td colspan="6" style="font-size:9.5px;color:#555">↳ ${esc(pg.obs)}</td></tr>` : ''}`) : ['<tr><td colspan="6" class="c">Sin pagos registrados</td></tr>']).concat([`<tr class="tot"><td colspan="5">TOTAL PAGADO (${pagos.length} pago(s))</td><td class="r">${money(x.pag)}</td></tr>`]))}</div></div>
+      ${a.notas ? `<div style="font-size:10.5px;margin-top:5px"><b>Acuerdos / notas:</b> ${esc(a.notas)}</div>` : ''}</div>`;
+  };
+  return `<div class="page land">${membrete()}<div class="ptitle">ESTADO DE CUENTA DE ARRENDATARIOS ${Store.year}${cat ? ' · ' + esc(cat).toUpperCase() : ''}${filas.length === 1 ? ' · ' + esc(String(filas[0].a.nombre).toUpperCase()) : ''}</div><div class="psub">Al ${flong(today())}</div>
+    <div class="pkpi"><div><small>Arrendatarios</small><b>${filas.length}</b></div><div><small>Al día</small><b style="color:#2e7d32">${alDia}</b></div><div><small>Con saldo</small><b style="color:#c00">${conSaldo}</b></div><div><small>Esperado a la fecha</small><b>${money(T('esp'))}</b></div><div><small>Pagado</small><b>${money(T('pag'))}</b></div><div><small>Saldo pendiente</small><b style="color:#c00">${money(T('saldo'))}</b></div><div><small>% cobrado</small><b>${pctCob.toFixed(0)}%</b></div></div>
+    <b style="font-size:12px">1. RESUMEN POR MES</b>${cuadro}
+    <div style="font-size:10px;margin-top:3px">Montos = pagado en ese mes · ✘ pendiente · ◐ abono parcial · celda vacía = mes fuera del contrato o aún no vence. Se cobra desde el inicio del contrato hasta el mes actual (o el fin del contrato).</div>
+    <div style="margin-top:14px"><b style="font-size:12px">2. DETALLE POR ARRENDATARIO</b></div>
+    ${filas.map(detalle).join('')}
+    ${firmasDoc('arrend')}</div>`;
+}
+
+/* ======================= RENDICIÓN DE CUENTAS (informe anual, configurable) ======================= */
+const REND_SECC = [
+  ['resumen', 'Resumen general'], ['ingresos_rubro', 'Ingresos por concepto'], ['ingresos_mes', 'Ingresos por mes'], ['ingresos_nivel', 'Ingresos por nivel educativo'],
+  ['alimentos', 'Programa de alimentación'], ['arrend', 'Arrendamiento de cafetines y locales'], ['donaciones', 'Donaciones recibidas'], ['devoluciones', 'Devoluciones realizadas'],
+  ['depositos', 'Depósitos bancarios'], ['banco', 'Saldos en cuentas bancarias'], ['cajachica', 'Fondo de caja chica'], ['compras', 'Compras realizadas'],
+  ['cheques', 'Cheques emitidos'], ['uniformes', 'Venta de uniformes'], ['cuadre', 'Cuadre de caja al cierre']];
+const REND_DEF = () => ({
+  titulo: 'INFORME DE RENDICIÓN DE CUENTAS', subtitulo: 'Ejercicio {{anio}}',
+  intro: 'El {{organismo}} del {{institucion}}, en cumplimiento de su compromiso de transparencia, presenta a la comunidad educativa el informe de los fondos administrados durante el año {{anio}}, con el detalle de ingresos, egresos y saldos al {{fecha_larga}}.',
+  cierre: 'Toda la documentación de respaldo (recibos, facturas, comprobantes de depósito y libros) se encuentra a disposición de la comunidad educativa para su consulta en la oficina de la institución.',
+  graficos: true, vacias: false, firmas: true, numerar: true, detalle: true, desde: '', hasta: '',
+  secciones: REND_SECC.map(([k, t]) => ({ k, t, on: !['devoluciones', 'uniformes'].includes(k) }))
+});
+function rendCfg() {
+  const d = REND_DEF(), c = Object.assign({}, d, CFG.rendicion || {});
+  const ss = (c.secciones || []).filter(x => REND_SECC.some(([k]) => k === x.k));
+  REND_SECC.forEach(([k, t]) => { if (!ss.some(x => x.k === k)) ss.push({ k, t, on: false }); });
+  c.secciones = ss; return c;
+}
+function informeRendicion(c) {
+  const de = c.desde || '', ha = c.hasta || '', inR = f => { const x = toYMD(f); return (!de || x >= de) && (!ha || x <= ha); };
+  const T = totalesIngreso(de, ha), rbs = rubrosOn();
+  const ccRows = prepCaja(Store.all('cajachica')) && Store.all('cajachica').filter(r => inR(r.fecha));
+  const gastosCC = ccRows.filter(r => num(r.haber) && !/REPOSICI|INICIO/i.test(r.tipo || '')), repos = ccRows.filter(r => num(r.debe));
+  const cheq = Store.all('cheques').filter(r => inR(r.fecha) && r.estado !== 'ANULADO');
+  const comp = Store.all('compras').filter(r => inR(r.fecha_sol) && r.estado !== 'ANULADO');
+  const ventas = Store.all('unif_ventas').filter(r => inR(r.fecha));
+  const vars = { anio: Store.year, institucion: CFG.inst.nombre, organismo: tituloCase(CFG.inst.organismo), fecha_larga: flong(ha || today()), total_ingresos: money(T.suma) };
+  const V = t => String(t || '').replace(/\{\{\s*(\w+)\s*\}\}/g, (m, k) => vars[k] ?? m);
+  const pct = (a, b) => b ? (a / b * 100).toFixed(1) + '%' : '—';
+  const barra = (v, max, color) => c.graficos ? `<div style="height:9px;background:#e8eef7;border-radius:5px;overflow:hidden;-webkit-print-color-adjust:exact;print-color-adjust:exact"><div style="height:100%;width:${max ? Math.max(1, v / max * 100) : 0}%;background:${color || '#2e75b6'};-webkit-print-color-adjust:exact;print-color-adjust:exact"></div></div>` : '';
+  const kp = arr => `<div class="pkpi" style="flex-wrap:wrap">${arr.map(([l, v]) => `<div style="min-width:23%"><small>${l}</small><b>${v}</b></div>`).join('')}</div>`;
+  const nota = t => `<div style="font-size:10px;color:#555;margin-top:3px">${t}</div>`;
+  const S = {
+    resumen: () => kp([['Ingresos cobrados (recibos)', money(T.suma)], ['Recibos emitidos', nfmt(T.v.length)], ['Donaciones', money(T.don)], ['Alquileres de cafetines', money(T.caf)], ['Depositado en banco', money(T.dep)], ['Gastos de caja chica', money(gastosCC.reduce((a, r) => a + num(r.haber), 0))], ['Cheques emitidos', money(cheq.reduce((a, r) => a + num(r.monto), 0))], ['Compras realizadas', money(comp.reduce((a, r) => a + itemsTotal(r.items), 0))]]),
+    ingresos_rubro: () => { const xs = rbs.map(x => [x.l, T.rb[x.k] || 0]).filter(x => x[1]).sort((a, b) => b[1] - a[1]); if (!xs.length) return ''; const mx = xs[0][1];
+      return ptable(['Concepto', 'Monto', '%', ...(c.graficos ? [{ l: '', w: '30%' }] : [])], xs.map(([l, v]) => `<tr><td>${esc(l)}</td><td class="r">${money(v)}</td><td class="r">${pct(v, T.suma)}</td>${c.graficos ? `<td>${barra(v, mx)}</td>` : ''}</tr>`).concat([`<tr class="tot"><td>TOTAL</td><td class="r">${money(T.suma)}</td><td class="r">100%</td>${c.graficos ? '<td></td>' : ''}</tr>`]))
+        + (T.enBanco ? nota(`Incluye ${money(T.enBanco)} de rubros que se pagan directamente en banco.`) : ''); },
+    ingresos_mes: () => { const m = Array(12).fill(0), n = Array(12).fill(0); T.v.forEach(r => { const d = dobj(r.fecha); if (d) { m[d.getMonth()] += num(r.pago); n[d.getMonth()]++; } }); const mx = Math.max(...m); if (!mx) return '';
+      return ptable(['Mes', 'Recibos', 'Monto', ...(c.graficos ? [{ l: '', w: '40%' }] : [])], m.map((v, i) => v ? `<tr><td>${MESES_CAP[i]}</td><td class="c">${n[i]}</td><td class="r">${money(v)}</td>${c.graficos ? `<td>${barra(v, mx, '#5b9bd5')}</td>` : ''}</tr>` : '').filter(Boolean).concat([`<tr class="tot"><td>TOTAL</td><td class="c">${T.v.length}</td><td class="r">${money(T.pago)}</td>${c.graficos ? '<td></td>' : ''}</tr>`])); },
+    ingresos_nivel: () => { const xs = Object.entries(T.niv).sort((a, b) => b[1] - a[1]); if (!xs.length) return ''; const mx = xs[0][1];
+      return ptable(['Nivel', 'Monto', '%', ...(c.graficos ? [{ l: '', w: '35%' }] : [])], xs.map(([l, v]) => `<tr><td>${esc(l)}</td><td class="r">${money(v)}</td><td class="r">${pct(v, T.pago)}</td>${c.graficos ? `<td>${barra(v, mx, '#70ad47')}</td>` : ''}</tr>`)); },
+    alimentos: () => { const ix = indicePagos(de, ha); const ests = ix.ests.filter(e => !/RETIRADO|INACTIVO/i.test(e.estado || '')); if (!ests.length) return ''; const req = mesesRequeridos(ha || today());
+      let solv = 0, meses = 0, alim = 0; ests.forEach(e => { const rs = ix.pag.get(e._id) || []; const m = rs.reduce((a, r) => a + mesesAlimDe(r), 0); meses += m; alim += rs.reduce((a, r) => a + num(r.r_alimentos), 0); if (m + 0.001 >= req) solv++; });
+      const pend = r2(Math.max(0, ests.length * req - meses));
+      return kp([['Estudiantes', nfmt(ests.length)], ['Solventes', `${nfmt(solv)} (${pct(solv, ests.length)})`], ['Meses cobrados', nfmt(r2(meses))], ['Recaudado', money(alim)]]) + nota(`Cuota de ${money(CFG.alimentos.cuota)} por mes durante ${mesesCobro().length} meses (${esc(listaMeses(mesesCobro()))}). Quedan ${nfmt(pend)} mes(es)-estudiante pendientes de pago.`); },
+    arrend: () => { const xs = Object.values(estadoCuentaArr()); if (!xs.length) return '';
+      return ptable(['Arrendatario', 'Espacio', 'Cuota', 'Esperado', 'Pagado', 'Saldo'], xs.map(x => `<tr><td>${esc(x.a.nombre)}</td><td>${esc(x.a.espacio || x.a.categoria || '')}</td><td class="r">${money(x.a.cuota)}</td><td class="r">${money(x.esp)}</td><td class="r">${money(x.pag)}</td><td class="r">${money(x.saldo)}</td></tr>`).concat([`<tr class="tot"><td colspan="3">TOTAL</td><td class="r">${money(xs.reduce((a, x) => a + x.esp, 0))}</td><td class="r">${money(xs.reduce((a, x) => a + x.pag, 0))}</td><td class="r">${money(xs.reduce((a, x) => a + x.saldo, 0))}</td></tr>`])); },
+    donaciones: () => { const xs = Store.all('donaciones').filter(r => inR(r.fecha)).sort((a, b) => String(a.fecha).localeCompare(b.fecha)); if (!xs.length) return '';
+      return ptable(['Fecha', 'Donante', 'Concepto', 'Monto'], (c.detalle ? xs : []).map(r => `<tr><td class="c">${fdate(r.fecha)}</td><td>${esc(r.nombre || '')}</td><td>${esc(r.concepto || '')}</td><td class="r">${money(r.cantidad)}</td></tr>`).concat([`<tr class="tot"><td colspan="3">TOTAL (${xs.length} donación(es))</td><td class="r">${money(T.don)}</td></tr>`])); },
+    devoluciones: () => { const xs = Store.all('devoluciones').filter(r => inR(r.fecha)); if (!xs.length) return '';
+      return ptable(['Fecha', 'Nombre', 'Motivo', 'Monto'], (c.detalle ? xs : []).map(r => `<tr><td class="c">${fdate(r.fecha)}</td><td>${esc(r.nombre || '')}</td><td>${esc(r.motivo || r.concepto || '')}</td><td class="r">${money(r.cantidad)}</td></tr>`).concat([`<tr class="tot"><td colspan="3">TOTAL</td><td class="r">${money(T.dev)}</td></tr>`])); },
+    depositos: () => { const xs = Store.all('depositos').filter(r => inR(r.fecha)); if (!xs.length) return ''; const g = {}; xs.forEach(r => { const k = r.cuenta || 'Sin cuenta especificada'; (g[k] = g[k] || { n: 0, v: 0 }); g[k].n++; g[k].v += num(r.cantidad); });
+      return ptable(['Cuenta', 'Depósitos', 'Monto'], Object.entries(g).map(([k, x]) => `<tr><td>${esc(k)}</td><td class="c">${x.n}</td><td class="r">${money(x.v)}</td></tr>`).concat([`<tr class="tot"><td>TOTAL</td><td class="c">${xs.length}</td><td class="r">${money(T.dep)}</td></tr>`])); },
+    banco: () => { const xs = Store.all('banco').filter(r => !ha || toYMD(r.fecha) <= ha); if (!xs.length) return ''; const g = {}; xs.forEach(r => { const k = r.cuenta || 'Cuenta principal'; g[k] = r2((g[k] || 0) + num(r.debe) - num(r.haber)); });
+      return ptable(['Cuenta', 'Saldo según libro de banco'], Object.entries(g).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="r">${money(v)}</td></tr>`).concat([`<tr class="tot"><td>TOTAL</td><td class="r">${money(Object.values(g).reduce((a, b) => a + b, 0))}</td></tr>`])); },
+    cajachica: () => { if (!ccRows.length) return ''; const g = {}; gastosCC.forEach(r => { const k = r.categoria || 'Sin categoría'; g[k] = (g[k] || 0) + num(r.haber); }); const tot = Object.values(g).reduce((a, b) => a + b, 0), mx = Math.max(0, ...Object.values(g));
+      return kp([['Fondo asignado', money(CFG.caja.fondo)], ['Reposiciones recibidas', money(repos.reduce((a, r) => a + num(r.debe), 0))], ['Gastos documentados', money(tot)], ['Comprobantes', nfmt(gastosCC.length)]])
+        + ptable(['Categoría de gasto', 'Monto', '%', ...(c.graficos ? [{ l: '', w: '30%' }] : [])], Object.entries(g).sort((a, b) => b[1] - a[1]).map(([k, v]) => `<tr><td>${esc(k.replace(/^\d+\s*/, ''))}</td><td class="r">${money(v)}</td><td class="r">${pct(v, tot)}</td>${c.graficos ? `<td>${barra(v, mx, '#ed7d31')}</td>` : ''}</tr>`).concat([`<tr class="tot"><td>TOTAL</td><td class="r">${money(tot)}</td><td class="r">100%</td>${c.graficos ? '<td></td>' : ''}</tr>`])); },
+    compras: () => { if (!comp.length) return ''; return ptable(['N°', 'Fecha', 'Proveedor', 'Detalle', 'Estado', 'Monto'], (c.detalle ? comp.sort((a, b) => num(a.numero) - num(b.numero)) : []).map(r => `<tr><td class="c">${esc(r.numero)}</td><td class="c">${fdate(r.fecha_sol)}</td><td>${esc(r.proveedor || '')}</td><td style="font-size:10px">${esc((r.items || []).map(i => i.desc).filter(Boolean).slice(0, 3).join(', '))}${(r.items || []).length > 3 ? '…' : ''}</td><td>${esc(String(r.estado || '').replace(/^\d\s*/, ''))}</td><td class="r">${money(itemsTotal(r.items))}</td></tr>`).concat([`<tr class="tot"><td colspan="5">TOTAL (${comp.length} proceso(s))</td><td class="r">${money(comp.reduce((a, r) => a + itemsTotal(r.items), 0))}</td></tr>`])); },
+    cheques: () => { if (!cheq.length) return ''; return ptable(['N°', 'Fecha', 'Beneficiario', 'Concepto', 'Monto'], (c.detalle ? cheq.sort((a, b) => String(a.fecha).localeCompare(b.fecha)) : []).map(r => `<tr><td class="c">${esc(r.numero)}</td><td class="c">${fdate(r.fecha)}</td><td>${esc(r.beneficiario || '')}</td><td style="font-size:10px">${esc(r.concepto || '')}</td><td class="r">${money(r.monto)}</td></tr>`).concat([`<tr class="tot"><td colspan="4">TOTAL (${cheq.length} cheque(s))</td><td class="r">${money(cheq.reduce((a, r) => a + num(r.monto), 0))}</td></tr>`])); },
+    uniformes: () => { if (!ventas.length) return ''; const g = {}; ventas.forEach(v => { const k = v.tipo || 'Otro'; const x = g[k] = g[k] || { u: 0, v: 0, c: 0 }; x.u += num(v.cantidad); x.v += num(v.cantidad) * num(v.precio); const p = precioDe(v.tipo, v.talla); x.c += num(v.cantidad) * (p ? p.costo : 0); });
+      return ptable(['Producto', 'Unidades', 'Venta', 'Costo', 'Utilidad'], Object.entries(g).map(([k, x]) => `<tr><td>${esc(k)}</td><td class="c">${x.u}</td><td class="r">${money(x.v)}</td><td class="r">${money(x.c)}</td><td class="r">${money(x.v - x.c)}</td></tr>`)); },
+    cuadre: () => { const PC = posicionCaja(); return ptable(['Concepto', 'Monto'], [['Cobrado según rubros', PC.T.suma], ...(PC.T.enBanco ? [['(−) Rubros pagados en banco', PC.T.enBanco]] : []), ['(−) Depositado en banco', PC.T.dep], ['(−) No remesado', PC.T.nr], ['(−) Devoluciones', PC.T.dev], ['Efectivo que debe haber', PC.T.esperado], ['Efectivo en caja (último arqueo y movimientos posteriores)', PC.enCaja]].map(([a, b]) => `<tr><td>${a}</td><td class="r">${money(b)}</td></tr>`).concat([`<tr class="tot"><td>DIFERENCIA ${Math.abs(PC.dif) < 0.01 ? '✔ CUADRA' : PC.dif > 0 ? '(FALTANTE)' : '(SOBRANTE)'}</td><td class="r">${money(PC.dif)}</td></tr>`])) + (PC.arq ? nota(`Último arqueo: ${fdate(PC.arq.fecha)}.`) : ''); }
+  };
+  let n = 0;
+  const cuerpo = c.secciones.filter(x => x.on).map(x => { let h = ''; try { h = S[x.k] ? S[x.k]() : ''; } catch (e) { h = `<div style="color:#c00">No se pudo generar: ${esc(e.message)}</div>`; }
+    if (!h && !c.vacias) return ''; n++; return `<div style="break-inside:avoid;margin-top:14px"><div style="font-weight:700;font-size:12.5px;color:#1f3864;border-bottom:1.5px solid #1f3864;padding-bottom:2px;margin-bottom:6px">${c.numerar ? n + '. ' : ''}${esc(String(x.t).toUpperCase())}</div>${h || '<div style="font-size:11px;color:#666">Sin movimientos en el periodo.</div>'}</div>`; }).join('');
+  const per = de || ha ? `Del ${de ? flong(de) : 'inicio del año'} al ${ha ? flong(ha) : flong(today())}` : `Al ${flong(today())}`;
+  return `<div class="page">${membrete()}<div class="ptitle" style="font-size:16px;margin-top:6px">${esc(V(c.titulo))}</div><div class="psub">${esc(V(c.subtitulo))} · ${per}</div>
+    ${c.intro ? `<p class="ptxt" style="text-align:justify;margin-top:10px">${esc(V(c.intro)).replace(/\n/g, '<br>')}</p>` : ''}${cuerpo}
+    ${c.cierre ? `<p class="ptxt" style="text-align:justify;margin-top:16px">${esc(V(c.cierre)).replace(/\n/g, '<br>')}</p>` : ''}
+    ${c.firmas ? `<div style="break-inside:avoid">${firmasDoc('rendicion')}</div>` : ''}</div>`;
+}
+defView('r:rendicion', 'Rendición de cuentas', el => {
+  let c = rendCfg();
+  const draw = () => {
+    el.innerHTML = `<div class="bar"><span class="muted">Informe anual de transparencia. Se arma solo con los datos del año ${Store.year}; ajuste el contenido a la izquierda.</span><span class="sp"></span><button class="btn" id="rdDr">☁️ PDF en Drive</button><button class="btn pri" id="rdP" style="font-size:15px;padding:9px 18px">🖨️ Generar informe</button></div>
+    <div class="grid" style="grid-template-columns:minmax(330px,420px) 1fr;gap:16px;align-items:start">
+    <div class="card"><h3 style="margin-top:0">⚙️ Contenido del informe</h3>
+      <label class="f"><span>Título</span><input class="in" data-c="titulo" value="${esc(c.titulo)}"></label>
+      <label class="f" style="margin-top:6px"><span>Subtítulo</span><input class="in" data-c="subtitulo" value="${esc(c.subtitulo)}"></label>
+      <div class="form" style="margin-top:6px;grid-template-columns:1fr 1fr"><label class="f"><span>Desde (vacío = inicio del año)</span><input type="date" class="in" data-c="desde" value="${esc(c.desde)}"></label><label class="f"><span>Hasta (vacío = hoy)</span><input type="date" class="in" data-c="hasta" value="${esc(c.hasta)}"></label></div>
+      <label class="f" style="margin-top:6px"><span>Texto de introducción</span><textarea class="in" rows="4" data-c="intro">${esc(c.intro)}</textarea></label>
+      <div class="ft muted" style="font-size:12px;margin:10px 0 4px">SECCIONES · marque las que quiere incluir, cambie el título o el orden</div>
+      <div id="rdS">${c.secciones.map((x, i) => `<div data-i="${i}" style="display:flex;gap:6px;align-items:center;margin:3px 0"><input type="checkbox" data-on ${x.on ? 'checked' : ''} style="width:17px;height:17px"><input class="in" data-t value="${esc(x.t)}" style="flex:1;padding:5px 8px;${x.on ? '' : 'opacity:.5'}"><button class="btn sm" data-up ${i ? '' : 'disabled'}>▲</button><button class="btn sm" data-dn ${i < c.secciones.length - 1 ? '' : 'disabled'}>▼</button></div>`).join('')}</div>
+      <label class="f" style="margin-top:8px"><span>Texto de cierre</span><textarea class="in" rows="3" data-c="cierre">${esc(c.cierre)}</textarea></label>
+      <div style="display:grid;gap:4px;margin-top:8px">
+        <label class="chk"><input type="checkbox" data-b="graficos" ${c.graficos ? 'checked' : ''}> Barras gráficas en las tablas</label>
+        <label class="chk"><input type="checkbox" data-b="detalle" ${c.detalle ? 'checked' : ''}> Detalle (lista de donaciones, compras y cheques; si no, solo totales)</label>
+        <label class="chk"><input type="checkbox" data-b="numerar" ${c.numerar ? 'checked' : ''}> Numerar las secciones</label>
+        <label class="chk"><input type="checkbox" data-b="vacias" ${c.vacias ? 'checked' : ''}> Mostrar secciones sin movimientos</label>
+        <label class="chk"><input type="checkbox" data-b="firmas" ${c.firmas ? 'checked' : ''}> Firmas al final (Configuración › Firmantes)</label></div>
+      <p class="muted" style="font-size:11.5px">En los textos puede usar {{anio}}, {{institucion}}, {{organismo}}, {{fecha_larga}}, {{total_ingresos}}.</p>
+      <div class="bar"><button class="btn" id="rdR">↺ Restablecer</button><span class="sp"></span><button class="btn pri" id="rdG">💾 Guardar como predeterminado</button></div></div>
+    <div class="pv-mini" id="rdPv"></div></div>`;
+    const prev = () => { $('#rdPv', el).innerHTML = informeRendicion(c); };
+    prev();
+    $$('[data-c]', el).forEach(i => i.oninput = debounce(() => { c[i.dataset.c] = i.value; prev(); }, 250));
+    $$('[data-b]', el).forEach(i => i.onchange = () => { c[i.dataset.b] = i.checked; prev(); });
+    $$('#rdS [data-i]', el).forEach(d => { const i = num(d.dataset.i), x = c.secciones[i];
+      $('[data-on]', d).onchange = e => { x.on = e.target.checked; $('[data-t]', d).style.opacity = x.on ? '' : '.5'; prev(); };
+      $('[data-t]', d).oninput = debounce(e => { x.t = e.target.value; prev(); }, 250);
+      $('[data-up]', d).onclick = () => { [c.secciones[i - 1], c.secciones[i]] = [c.secciones[i], c.secciones[i - 1]]; draw(); };
+      $('[data-dn]', d).onclick = () => { [c.secciones[i + 1], c.secciones[i]] = [c.secciones[i], c.secciones[i + 1]]; draw(); }; });
+    $('#rdG', el).onclick = async () => { CFG.rendicion = JSON.parse(JSON.stringify(c)); await saveCfg(true); toast('Configuración del informe guardada ✔ · la próxima vez saldrá así con un clic', 'ok', 4000); };
+    $('#rdR', el).onclick = async () => { if (!(await confirmBox('¿Volver al contenido original del informe?', 'Restablecer'))) return; c = REND_DEF(); draw(); };
+    $('#rdP', el).onclick = () => Print.show('Rendición de cuentas ' + Store.year, informeRendicion(c));
+    $('#rdDr', el).onclick = () => { Print.show('Rendición de cuentas ' + Store.year, informeRendicion(c)); setTimeout(() => Print.drive(), 300); };
+  };
+  draw(); return draw;
+});
+
+/* ======================= CONSULTA RÁPIDA DE ALUMNO (ficha) ======================= */
+/** Personas que pagan: estudiantes de la base + nombres de recibos que no están en la base */
+function personasPago() {
+  const ix = indicePagos(), out = [], vistos = new Set();
+  ix.ests.forEach(e => { out.push({ k: e._id, nombre: e.nombre, est: e, recs: ix.pag.get(e._id) || [] }); vistos.add(norm(e.nombre)); });
+  const otros = new Map();
+  ix.sinBD.forEach(r => { const n = norm(r.nombre); if (!n || vistos.has(n)) return; (otros.get(n) || otros.set(n, { k: 'n:' + n, nombre: r.nombre, est: null, recs: [] }).get(n)).recs.push(r); });
+  otros.forEach(x => out.push(x));
+  return out;
+}
+function recibosDePersona(p) {
+  const n = norm(p.nombre), nie = p.est && p.est.nie ? String(p.est.nie) : '';
+  return Store.all('recibos').filter(r => (p.est && r.est_id === p.est._id) || (nie && String(r.nie || '') === nie) || norm(r.nombre) === n);
+}
+function estadoAlimentos(recs) {
+  const val = recs.filter(r => !isTrue(r.nulo));
+  const meses = r2(val.reduce((a, r) => a + mesesAlimDe(r), 0)), req = mesesRequeridos(today()), falta = r2(Math.max(0, req - meses));
+  return { meses, req, falta, monto: r2(falta * num(CFG.alimentos.cuota)), dm: detalleMeses(meses), solv: falta < 0.001 };
+}
+const marcar = (txt, terms) => { let h = esc(txt); terms.filter(t => t.length > 1).forEach(t => { const rx = new RegExp('(' + t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').split('').map(c => ({ a: '[aáà]', e: '[eéè]', i: '[iíì]', o: '[oóò]', u: '[uúüù]', n: '[nñ]' }[c] || c)).join('') + ')', 'gi'); h = h.replace(rx, '<mark class="hl">$1</mark>'); }); return h; };
+function fichaHtml(p, o = {}) {
+  const recs = recibosDePersona(p).sort((a, b) => String(b.fecha).localeCompare(a.fecha) || num(b.numero) - num(a.numero));
+  const val = recs.filter(r => !isTrue(r.nulo)), tot = val.reduce((a, r) => a + num(r.pago), 0);
+  const e = p.est, esEst = !!e || recs.some(r => (r.tipo || 'Estudiante') === 'Estudiante');
+  const A = estadoAlimentos(recs);
+  const badge = !esEst ? `<span class="fbadge mut">Sin cobro de alimentos</span>` : A.solv ? `<span class="fbadge ok">✔ SOLVENTE EN ALIMENTOS · ${nfmt(A.meses)} de ${A.req}${A.dm.extra ? ` (+${nfmt(A.dm.extra)} adelantado)` : ''}</span>` : `<span class="fbadge bad">DEBE ALIMENTOS · ${nfmt(A.falta)} mes(es) · ${money(A.monto)}</span>`;
+  const g = e ? [e.grado, e.seccion ? 'Sección ' + e.seccion : '', e.opcion, e.nie ? 'NIE ' + e.nie : ''] : [recs[0] && recs[0].grado, recs[0] && recs[0].seccion ? 'Sección ' + recs[0].seccion : '', '(no está en la base de estudiantes)'];
+  const rb = rubrosOn().map(x => [x.l, val.reduce((a, r) => a + num(r['r_' + x.k]), 0)]).filter(x => x[1]);
+  const cap3 = m => cap(MESES[m - 1].slice(0, 3));
+  return `<div class="ficha"><div class="fh"><div style="font-size:32px">🎓</div>
+    <div style="flex:1;min-width:240px"><div class="fn">${marcar(p.nombre, o.terms || [])}</div><div class="muted">${esc(g.filter(Boolean).join(' · '))}</div></div>
+    <div style="text-align:right">${badge}<div class="muted" style="font-size:12px;margin-top:5px">Pagado en ${Store.year}: <b style="color:var(--tx)">${money(tot)}</b> en ${val.length} recibo(s)${recs.length > val.length ? ` · ${recs.length - val.length} anulado(s)` : ''}</div></div></div>
+    <div class="fgrid"><div>
+      ${esEst ? `<div class="ft">Alimentos · ${nfmt(A.meses)} de ${A.req} meses (${money(CFG.alimentos.cuota)} c/u)</div><div>${mesesCobro().map(m => `<span class="mchip ${A.dm.cub.includes(m) ? 'ok' : 'no'}">${cap3(m)}${A.dm.cub.includes(m) ? ' ✔' : ''}</span>`).join('')}</div>
+        ${!A.solv ? `<div class="bad-t" style="font-size:12.5px;margin-top:4px">Pendiente: ${esc(listaMeses(A.dm.pen.slice(0, Math.ceil(A.falta))))}</div>` : ''}` : ''}
+      <div class="ft" style="margin-top:12px">Pagado por rubro</div>
+      ${rb.length ? `<table class="t"><tbody>${rb.map(([l, v]) => `<tr><td>${esc(l)}</td><td class="num">${money(v)}</td></tr>`).join('')}</tbody></table>` : '<div class="muted">Sin pagos este año.</div>'}</div>
+      <div><div class="ft">Recibos</div>${recs.length ? `<div class="rtw"><table class="t"><thead><tr><th>N°</th><th>Fecha</th><th>Concepto</th><th class="r">Pago</th></tr></thead><tbody>
+        ${recs.map(r => `<tr data-rid="${r._id}" class="${r._id === o.rec ? 'hl' : ''}" style="cursor:pointer;${isTrue(r.nulo) ? 'text-decoration:line-through;opacity:.6' : ''}" title="Abrir recibo"><td>${esc(recNum(r))}${r.obs ? ' 📝' : ''}</td><td>${fdate(r.fecha).slice(0, 5)}</td><td>${esc(r.concepto || '')}</td><td class="num">${money(r.pago)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="muted">No tiene recibos este año.</div>'}</div></div>
+    <div class="bar" style="margin:14px 0 0"><button class="btn pri" data-fa="rec">🧾 Nuevo recibo</button>${e ? '<button class="btn" data-fa="const">📄 Constancia</button><button class="btn" data-fa="edit">✏️ Editar estudiante</button>' : ''}<button class="btn" data-fa="todos">📋 Ver todos sus recibos</button></div></div>`;
+}
+function bindFicha(host, p, redraw) {
+  $$('[data-rid]', host).forEach(tr => tr.onclick = () => openRecibo(Store.get('recibos', tr.dataset.rid), redraw));
+  $$('[data-fa]', host).forEach(b => b.onclick = () => {
+    const e = p.est, a = b.dataset.fa;
+    if (a === 'rec') openRecibo(null, redraw, e ? { nombre: e.nombre, nie: e.nie || '', grado: e.grado || '', seccion: e.seccion || '', opcion: e.opcion || '', est_id: e._id } : { nombre: p.nombre });
+    if (a === 'const') go('r:constancia', { est: e._id });
+    if (a === 'edit') openForm('estudiantes', e, { onDone: s => { if (s) { p.est = Store.get('estudiantes', s._id) || p.est; p.nombre = p.est.nombre; } redraw(); } });
+    if (a === 'todos') { MODO_FICHA.recibos = false; go('m:recibos', { state: { q: p.nombre, f: {}, page: 0 } }); }
+  });
+}
+function verFicha(e) {
+  const p = { k: e._id, nombre: e.nombre, est: e };
+  modal('🎓 Ficha del alumno', '<div id="fxM"></div>', [{ l: 'Cerrar', pri: 1 }]);
+  const draw = () => { const h = $('#fxM'); if (!h) return; h.innerHTML = fichaHtml(p); bindFicha(h, p, () => verFicha(Store.get('estudiantes', e._id) || e)); };
+  draw();
+}
+/** Buscador grande: nombre, apellido o NIE del alumno, o un N° de recibo (ej. 16334, B-16334, A-12) */
+function buscadorAlumnos(host, o = {}) {
+  host.classList.add('busA');
+  const barra = `<div class="busA-in"><input class="in big" id="bA_q" placeholder="🔎 Buscar alumno por nombre, apellido o NIE · o un N° de recibo" autocomplete="off"><button type="button" class="busA-x" id="bA_x" title="Limpiar (Esc)" hidden>✕</button></div><div class="hint" id="bA_h">Escriba al menos 2 letras. Use ↑ ↓ y Enter para elegir · Esc para limpiar.</div>`;
+  if (o.resHost) { host.classList.add('busA-fijo'); host.innerHTML = barra; o.resHost.classList.add('busA'); o.resHost.innerHTML = '<div id="bA_r" class="busA-res"></div>'; }
+  else host.innerHTML = `<div class="busA-fijo">${barra}</div><div id="bA_r" class="busA-res"></div>`;
+  const q = $('#bA_q', host), R = $('#bA_r', o.resHost || host), H = $('#bA_h', host), X = $('#bA_x', host);
+  X.onclick = () => { q.value = ''; buscar(); q.focus(); };
+  let res = [], idx = 0, sel = null, rec = null, terms = [];
+  const buscar = () => {
+    const t = q.value.trim(); X.hidden = !t; terms = norm(t).split(' ').filter(Boolean); sel = null; rec = null; idx = 0;
+    if (t.length < 2 && !/^\d+$/.test(t)) { res = []; R.innerHTML = ''; H.textContent = 'Escriba al menos 2 letras. Use ↑ ↓ y Enter para elegir · Esc para limpiar.'; return; }
+    const mr = t.match(/^([a-z])?\s*-?\s*(\d{1,7})$/i);
+    const P = personasPago(); res = [];
+    if (mr) {
+      const ser = mr[1] ? mr[1].toUpperCase() : '', n = num(mr[2]);
+      Store.all('recibos').filter(r => num(r.numero) === n && (!ser || String(r.serie || '').toUpperCase() === ser)).forEach(r => {
+        const pe = P.find(x => (x.est && (r.est_id === x.est._id || (x.est.nie && String(r.nie || '') === String(x.est.nie)))) || norm(x.nombre) === norm(r.nombre)) || { k: 'n:' + norm(r.nombre), nombre: r.nombre || '(sin nombre)', est: null };
+        res.push({ p: pe, rec: r });
+      });
+      P.filter(x => x.est && x.est.nie && String(x.est.nie).startsWith(mr[2])).slice(0, 8).forEach(x => res.push({ p: x }));
+    } else {
+      P.forEach(x => { const h = norm(x.nombre) + ' ' + (x.est ? String(x.est.nie || '') : ''); if (terms.every(w => h.includes(w))) res.push({ p: x, sc: (norm(x.nombre).startsWith(terms[0]) ? 0 : 1) + (x.est ? 0 : 0.5) }); });
+      res.sort((a, b) => a.sc - b.sc || String(a.p.nombre).localeCompare(b.p.nombre, 'es'));
+    }
+    pintar();
+  };
+  const pintar = () => {
+    if (!res.length) { R.innerHTML = '<div class="empty" style="padding:18px">Sin resultados.</div>'; H.textContent = ''; return; }
+    if (res.length === 1 || sel) { const x = sel || res[0]; H.innerHTML = res.length > 1 ? `<a href="#" id="bA_b">← volver a los ${res.length} resultados</a>` : (x.rec ? `Recibo ${esc(recNum(x.rec))} · ` : '') + '1 resultado'; R.innerHTML = fichaHtml(x.p, { terms, rec: x.rec && x.rec._id }); bindFicha(R, x.p, () => { const v = q.value; buscar(); if (x !== res[0]) { sel = res.find(y => y.p.k === x.p.k) || null; pintar(); } q.value = v; });
+      const bb = $('#bA_b', H); if (bb) bb.onclick = ev => { ev.preventDefault(); sel = null; pintar(); }; return; }
+    H.textContent = `${res.length} resultado(s)${res.length > 30 ? ' · se muestran los primeros 30, escriba más para afinar' : ''}`;
+    R.innerHTML = `<div class="resl">${res.slice(0, 30).map((x, i) => { const A = estadoAlimentos(recibosDePersona(x.p)); const e = x.p.est;
+      return `<div class="ri ${i === idx ? 'on' : ''}" data-i="${i}"><div style="flex:1"><b>${marcar(x.p.nombre, terms)}</b>${x.rec ? ` <span class="tag">Recibo ${esc(recNum(x.rec))} · ${fdate(x.rec.fecha)} · ${money(x.rec.pago)}</span>` : ''}<br><small>${esc(e ? [e.grado, e.seccion, e.opcion].filter(Boolean).join(' · ') : 'no está en la base')}</small></div>
+        <div style="text-align:right;font-size:12.5px">${A.solv ? '<span class="ok-t">✔ solvente</span>' : `<span class="bad-t">debe ${nfmt(A.falta)} mes(es)</span>`}<br><small>${nfmt(A.meses)}/${A.req} alimentos</small></div></div>`; }).join('')}</div>`;
+    $$('.ri', R).forEach(d => d.onclick = () => { sel = res[num(d.dataset.i)]; pintar(); });
+  };
+  q.addEventListener('input', debounce(buscar, 160));
+  q.addEventListener('keydown', ev => {
+    if (!res.length || sel || res.length === 1) { if (ev.key === 'Escape') { q.value = ''; buscar(); } return; }
+    if (ev.key === 'ArrowDown') { ev.preventDefault(); idx = Math.min(idx + 1, Math.min(res.length, 30) - 1); pintar(); }
+    else if (ev.key === 'ArrowUp') { ev.preventDefault(); idx = Math.max(idx - 1, 0); pintar(); }
+    else if (ev.key === 'Enter') { ev.preventDefault(); sel = res[idx]; pintar(); }
+    else if (ev.key === 'Escape') { q.value = ''; buscar(); }
+  });
+  return { refresh: buscar };
+}
+
+window.__OK = (window.__OK || []).concat('AppReports');
+</script>

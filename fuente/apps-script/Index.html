@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<base target="_top">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sistema de Suministros</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+<?!= include('Styles'); ?>
+<script>window.__BOOT = <?!= boot ?>;</script>
+</head>
+<body>
+<div id="app">
+  <aside id="side">
+    <div class="brand"><b>⚙️ SUMINISTROS</b><small id="instName">Sistema integrado</small></div>
+    <nav id="menu"></nav>
+    <div class="side-foot"><span id="sideUser" class="muted"></span></div>
+  </aside>
+  <main id="main">
+    <header id="top">
+      <button class="iconbtn" id="btnMenu" title="Mostrar/ocultar menú">☰</button>
+      <h1 id="title">Inicio</h1>
+      <span class="sp"></span>
+      <span id="topclock"></span>
+      <select id="yearSel" class="in" style="width:auto" title="Año de trabajo"></select>
+      <span id="sync" title="Sincronizar ahora"><i class="dot" id="syncDot"></i><span id="syncTx">Iniciando…</span></span>
+      <button class="iconbtn" id="btnTheme" title="Modo claro/oscuro">🌓</button>
+    </header>
+    <section id="view"><div class="empty">Cargando sistema…</div></section>
+  </main>
+</div>
+<div id="modal" class="hidden"></div>
+<div id="toasts"></div>
+<div id="printView"><div class="pv-bar"><b id="pvTitle">Vista de impresión</b>
+  <button class="btn" id="pvCols">🧩 Columnas</button>
+  <button class="btn pri" id="pvPrint">🖨️ Imprimir / Guardar PDF</button>
+  <button class="btn" id="pvDrive">☁️ PDF en Drive</button>
+  <button class="btn" id="pvClose">✕ Cerrar</button></div>
+  <div id="printRoot"></div></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" async></script>
+<?!= include('AppCore'); ?>
+<?!= include('AppModules'); ?>
+<?!= include('AppHome'); ?>
+<?!= include('AppReports'); ?>
+<?!= include('AppOps'); ?>
+<?!= include('AppConfig'); ?>
+</body>
+</html>
