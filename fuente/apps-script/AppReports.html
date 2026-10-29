@@ -492,7 +492,7 @@ const MOV_CAJA = [['depositos', 'cantidad', 'dep'], ['noremesado', 'monto', 'nr'
 const efectivoRecibo = r => isTrue(r.nulo) ? 0 : rubrosOn().filter(x => !x.banco).reduce((a, x) => a + num(r['r_' + x.k]), 0);
 function posicionCaja() {
   const T = totalesIngreso('', ''), arq = T.arq;
-  if (!arq) return { T, arq: null, contado: 0, delta: 0, enCaja: 0, dif: T.esperado, det: null };
+  if (!arq) return { T, arq: null, contado: 0, delta: 0, enCaja: T.esperado, dif: 0, det: null };
   let snap = null; try { snap = arq.snap ? JSON.parse(arq.snap) : null; } catch (e) { }
   const F = toYMD(arq.fecha), t0 = num((snap && snap.t) || arq._upd), ids = snap && snap.ids ? new Set(snap.ids) : null;
   const despues = r => { const f = toYMD(r.fecha); if (f > F) return true; if (f < F) return false; return ids ? !ids.has(r._id) : num(r._upd) > t0; };
@@ -507,6 +507,30 @@ function posicionCaja() {
 /** Al guardar un arqueo: qué registros del mismo día ya existían (para no contarlos otra vez después) */
 const snapCaja = fecha => { const A = totalesIngreso('', ''), F = toYMD(fecha || today()); const ids = []; ['recibos', 'donaciones', ...MOV_CAJA.map(x => x[0])].forEach(m => Store.all(m).forEach(r => { if (toYMD(r.fecha) === F) ids.push(r._id); }));
   return JSON.stringify({ esp: A.esperado, ing: A.ingresos, dep: A.dep, nr: A.nr, dev: A.dev, t: Date.now(), ids }); };
+
+/* ---------- Corregir recibos cuyo pago no coincide con la suma de rubros ---------- */
+function corregirSinRubro(v, done) {
+  const rbs = rubrosOn(); const sumaR = r => rbs.reduce((a, x) => a + num(r['r_' + x.k]), 0);
+  const lst = v.filter(r => Math.abs(num(r.pago) - sumaR(r)) >= .01).sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)) || num(a.numero) - num(b.numero));
+  const adivina = r => { const t = norm((r.concepto || '') + ' ' + (r.obs || '')); const x = rbs.find(rb => t && (t.includes(norm(rb.l)) || String(rb.kw || '').split('|').map(norm).filter(Boolean).some(k => t.includes(k)))); return x ? x.k : ''; };
+  const optR = sel => `<option value="">— elegir —</option>${rbs.map(x => `<option value="${x.k}" ${x.k === sel ? 'selected' : ''}>${esc(x.l)}</option>`).join('')}`;
+  modal('🔧 Recibos con pago sin rubro', `<p class="muted" style="margin-top:0">En estos recibos el <b>Pago</b> no coincide con la suma de sus rubros. Elija el rubro al que corresponde la diferencia (se sugiere según el concepto) y pulse <b>Aplicar</b>. Así el cuadre del año queda correcto.</p>
+    <div class="bar" style="margin:0 0 6px"><span class="muted" style="font-size:12px">Poner a todos los marcados:</span><select class="in" id="fxAll" style="width:auto">${optR('')}</select></div>
+    <div class="tw" style="max-height:380px"><table class="t"><thead><tr><th><input type="checkbox" id="fxCk" checked></th><th>Recibo</th><th>Fecha</th><th>Nombre / concepto</th><th class="r">Pago</th><th class="r">Rubros</th><th class="r">Diferencia</th><th>Rubro de la diferencia</th></tr></thead><tbody>
+    ${lst.map(r => { const d = r2(num(r.pago) - sumaR(r)); return `<tr data-id="${r._id}"><td><input type="checkbox" data-ck ${d > 0 ? 'checked' : 'disabled'}></td><td><a href="#" data-op="${r._id}">${esc(recNum(r))}</a></td><td>${fdate(r.fecha)}</td><td>${esc(r.nombre || '')}<div class="muted" style="font-size:11.5px">${esc(r.concepto || '')}</div></td><td class="num">${money(r.pago)}</td><td class="num">${money(sumaR(r))}</td><td class="num ${d > 0 ? 'warn-t' : 'bad-t'}">${money(d)}</td><td>${d > 0 ? `<select class="in" data-rk style="padding:4px 6px">${optR(adivina(r))}</select>` : '<span class="muted" style="font-size:11.5px">rubros mayores que el pago: abra el recibo</span>'}</td></tr>`; }).join('') || '<tr><td colspan="8" class="ok-t">✔ No hay diferencias.</td></tr>'}</tbody></table></div>`,
+    [{ l: 'Cerrar' }, { l: '✔ Aplicar a los marcados', pri: 1, fn: async () => {
+      const cambios = []; let falta = 0;
+      $$('#modal tr[data-id]').forEach(tr => { const ck = $('[data-ck]', tr), sel = $('[data-rk]', tr); if (!ck || !ck.checked || !sel) return; if (!sel.value) { falta++; return; }
+        const r = Store.get('recibos', tr.dataset.id); const d = r2(num(r.pago) - sumaR(r)); if (d <= 0) return;
+        const n = Object.assign({}, r); n['r_' + sel.value] = r2(num(r['r_' + sel.value]) + d); n.total = r2(sumaR(n)); cambios.push(n); });
+      if (falta) { toast(`${falta} recibo(s) marcados sin rubro elegido`, 'bad'); return false; }
+      if (!cambios.length) { toast('No hay recibos marcados', 'bad'); return false; }
+      await Store.saveMany('recibos', cambios); toast(`${cambios.length} recibo(s) corregidos ✔`, 'ok'); done && done(); return true;
+    } }], { lg: true });
+  $('#fxAll').onchange = e => { if (!e.target.value) return; $$('#modal tr[data-id]').forEach(tr => { const ck = $('[data-ck]', tr), sel = $('[data-rk]', tr); if (ck && ck.checked && sel) sel.value = e.target.value; }); };
+  $('#fxCk').onchange = e => $$('#modal [data-ck]:not([disabled])').forEach(c => c.checked = e.target.checked);
+  $$('#modal [data-op]').forEach(a => a.onclick = ev => { ev.preventDefault(); const r = Store.get('recibos', a.dataset.op); closeModal(); setTimeout(() => openRecibo(r, done), 60); });
+}
 defView('t:cuadre', 'Ingresos y cuadre', el => {
   const st = Object.assign(stDef(), { desde: '', hasta: '' }, LS.get('cu', {}));
   const draw = () => {
@@ -516,30 +540,33 @@ defView('t:cuadre', 'Ingresos y cuadre', el => {
     el.innerHTML = filtrosHtml(st, { btns: '<button class="btn pri" id="bPr">🖨️ Imprimir</button>' }) + `
     <div class="kpis"><div class="kpi"><div class="l">Cobrado en recibos</div><div class="v">${money(T.pago)}</div><div class="s">${T.v.length} recibos</div></div>
       <div class="kpi"><div class="l">Donaciones</div><div class="v">${money(T.don)}</div></div><div class="kpi"><div class="l">Cafetines (banco)</div><div class="v">${money(T.caf)}</div></div>
-      <div class="kpi"><div class="l">Depositado</div><div class="v">${money(T.dep)}</div></div><div class="kpi ${Math.abs(dif) < 0.01 ? 'ok' : 'bad'}"><div class="l">Diferencia de caja</div><div class="v">${money(dif)}</div><div class="s">${Math.abs(dif) < 0.01 ? '✔ Cuadra' : dif > 0 ? 'FALTANTE' : 'SOBRANTE'}</div></div></div>
+      <div class="kpi"><div class="l">Depositado</div><div class="v">${money(T.dep)}</div></div><div class="kpi ok"><div class="l">Efectivo que debe haber en caja hoy</div><div class="v">${money(ef)}</div><div class="s">${PC.arq ? 'según arqueo del ' + fdate(PC.arq.fecha) : 'sin arqueo'}</div></div></div>
     <div class="grid g2"><div class="card"><h3>1. Ingresos por concepto</h3><table class="t"><thead><tr><th>Concepto</th><th class="r">Monto</th><th class="r">%</th><th class="r">Unidades</th></tr></thead><tbody>
       ${rbs.filter(rb => T.rb[rb.k]).map(rb => `<tr><td>${esc(rb.l)}</td><td class="num">${money(T.rb[rb.k])}</td><td class="num">${pct(T.rb[rb.k], T.suma)}</td><td class="num">${rb.meses ? T.v.reduce((a, r) => a + num(r.meses_alim), 0) + ' meses' : rb.p ? nfmt(T.rb[rb.k] / rb.p) : ''}</td></tr>`).join('')}
       <tr><td><b>Suma por rubros</b></td><td class="num"><b>${money(T.suma)}</b></td><td></td><td></td></tr>
       <tr><td>Donaciones económicas ${CFG.cuadre.incluirDonaciones ? '' : '(no se suman al cuadre)'}</td><td class="num">${money(T.don)}</td><td></td><td></td></tr>
       <tr><td>Alquiler de cafetines (se paga en banco)</td><td class="num">${money(T.caf)}</td><td></td><td></td></tr></tbody></table></div>
-    <div class="card"><h3>2. Cuadre de caja</h3><table class="t"><tbody>
-      <tr><td>Cobrado en recibos según rubros</td><td class="num">${money(T.suma)}</td></tr>
-      ${T.enBanco ? `<tr><td>(−) Rubros pagados en banco (cafetines, etc.)</td><td class="num">${money(T.enBanco)}</td></tr>` : ''}
-      ${CFG.cuadre.incluirDonaciones ? `<tr><td>(+) Donaciones económicas</td><td class="num">${money(T.don)}</td></tr>` : ''}
-      <tr><td>(−) Depositado en banco</td><td class="num">${money(T.dep)}</td></tr><tr><td>(−) No remesado</td><td class="num">${money(T.nr)}</td></tr><tr><td>(−) Devoluciones</td><td class="num">${money(T.dev)}</td></tr>
-      <tr><td><b>Efectivo que debe haber</b></td><td class="num"><b>${money(T.esperado)}</b></td></tr>
-      ${PC.arq ? `<tr><td style="padding-left:22px" class="muted">Contado en el último arqueo · ${fdate(PC.arq.fecha)}</td><td class="num muted">${money(PC.contado)}</td></tr>
-      <tr><td style="padding-left:22px" class="muted">Movimientos registrados después del arqueo${movTxt ? ` <small>(${movTxt})</small>` : ''}${PC.aprox ? ' <small title="Este arqueo se guardó antes de esta mejora: se toman como posteriores los movimientos con fecha después del arqueo">ⓘ</small>' : ''}</td><td class="num muted">${PC.delta >= 0 ? '+' : ''}${money(PC.delta)}</td></tr>` : ''}
-      <tr><td>(−) Efectivo que debe estar en caja ${PC.arq ? '(último arqueo + movimientos posteriores)' : '(sin arqueo)'}</td><td class="num">${money(ef)}</td></tr>
-      <tr><td><b>DIFERENCIA</b></td><td class="num ${Math.abs(dif) < 0.01 ? 'ok-t' : 'bad-t'}"><b>${money(dif)}</b></td></tr></tbody></table>
-      <p class="muted" style="font-size:12px">Positivo = falta dinero · Negativo = sobra dinero. <a data-go="t:arqueo">Hacer arqueo ahora →</a></p>
-      <h3 style="margin-top:14px">3. Control</h3><table class="t"><tbody><tr><td>Total cobrado (Pago)</td><td class="num">${money(T.pago)}</td></tr><tr><td>Suma de rubros</td><td class="num">${money(T.suma)}</td></tr><tr><td><b>Diferencia</b></td><td class="num ${Math.abs(T.pago - T.suma) < .01 ? 'ok-t' : 'warn-t'}"><b>${money(T.pago - T.suma)}</b></td></tr></tbody></table></div></div>
+    <div class="card"><h3>2. Efectivo en caja hoy</h3><table class="t"><tbody>
+      ${PC.arq ? `<tr><td>Contado en el último arqueo · ${fdate(PC.arq.fecha)}</td><td class="num">${money(PC.contado)}</td></tr>
+      <tr><td>(+) Cobrado en efectivo después del arqueo</td><td class="num">${money(PC.det.ing)}</td></tr>
+      <tr><td>(−) Depositado después del arqueo</td><td class="num">${money(PC.det.dep)}</td></tr>
+      ${PC.det.nr ? `<tr><td>(−) No remesado después del arqueo</td><td class="num">${money(PC.det.nr)}</td></tr>` : ''}${PC.det.dev ? `<tr><td>(−) Devoluciones después del arqueo</td><td class="num">${money(PC.det.dev)}</td></tr>` : ''}`
+      : `<tr><td>Cobrado según rubros (sin los pagados en banco)</td><td class="num">${money(T.efectivo)}</td></tr><tr><td>(−) Depositado, no remesado y devoluciones</td><td class="num">${money(T.dep + T.nr + T.dev)}</td></tr>`}
+      <tr><td><b>EFECTIVO QUE DEBE HABER EN CAJA</b></td><td class="num"><b style="font-size:17px">${money(ef)}</b></td></tr></tbody></table>
+      <p class="muted" style="font-size:12px">Cuente el dinero y compárelo en el arqueo. <a data-go="t:arqueo">Hacer arqueo ahora →</a></p>
+      <h3 style="margin-top:14px">3. Revisión de datos del año</h3><table class="t"><tbody>
+      <tr><td>Total cobrado en recibos (Pago)</td><td class="num">${money(T.pago)}</td></tr><tr><td>Suma de rubros</td><td class="num">${money(T.suma)}</td></tr>
+      <tr><td><b>Recibos con pago sin rubro</b></td><td class="num ${Math.abs(T.pago - T.suma) < .01 ? 'ok-t' : 'warn-t'}"><b>${Math.abs(T.pago - T.suma) < .01 ? '✔ ' : ''}${money(T.pago - T.suma)}</b></td></tr>
+      ${PC.arq && !(st.desde || st.hasta) ? (() => { const sinR = r2(T.pago - T.suma), otras = r2(PC.dif + sinR); return `<tr><td colspan="2" class="muted" style="font-size:12px;padding-top:10px">Diferencia acumulada del año entre lo registrado y la caja real: <b>${money(Math.abs(PC.dif))}</b> ${Math.abs(PC.dif) < .01 ? '✔' : PC.dif > 0 ? '(falta)' : '(sobra)'}${Math.abs(PC.dif) >= .01 ? ` · se explica por: ${Math.abs(sinR) >= .01 ? `recibos sin rubro ${money(sinR)}` : ''}${Math.abs(sinR) >= .01 && Math.abs(otras) >= .01 ? ' y ' : ''}${Math.abs(otras) >= .01 ? `${otras > 0 ? 'faltantes' : 'sobrantes'} de arqueos anteriores ${money(Math.abs(otras))}` : ''}` : ''}. No afecta el efectivo de hoy.</td></tr>`; })() : ''}</tbody></table>
+      ${Math.abs(T.pago - T.suma) >= .01 ? `<button class="btn" id="bFix" style="margin-top:8px">🔧 Corregir recibos sin rubro (${T.v.filter(r => Math.abs(num(r.pago) - rubrosOn().reduce((a, x) => a + num(r['r_' + x.k]), 0)) >= .01).length})</button>` : ''}</div></div>
     <div class="card"><h3>4. Cobrado por nivel</h3><div class="bars">${Object.entries(T.niv).sort((a, b) => b[1] - a[1]).map(([n, m]) => `<div class="row"><span>${esc(n)}</span><div class="tr"><i style="width:${m / Math.max(1, T.pago) * 100}%"></i></div><span class="num">${money(m)} · ${pct(m, T.pago)}</span></div>`).join('')}</div></div>`;
     $$('input', el).forEach(x => x.onchange = () => { leerFiltros(el, st); LS.set('cu', st); draw(); });
     $$('[data-go]', el).forEach(a => a.onclick = () => go(a.dataset.go));
+    const bf = $('#bFix', el); if (bf) bf.onclick = () => corregirSinRubro(T.v, draw);
     $('#bPr', el).onclick = () => Print.show('Ingresos y cuadre', `<div class="page">${membrete()}<div class="ptitle">INGRESOS ${Store.year} · RESUMEN Y CUADRE</div><div class="psub">${st.desde || st.hasta ? `Del ${fdate(st.desde) || 'inicio'} al ${fdate(st.hasta) || 'cierre'}` : 'Todo el año ' + Store.year}</div>
       <b>1. INGRESOS POR CONCEPTO</b>${ptable(['Concepto', 'Monto', '%'], rbs.filter(rb => T.rb[rb.k]).map(rb => `<tr><td>${esc(rb.l)}</td><td class="r">${money(T.rb[rb.k])}</td><td class="r">${pct(T.rb[rb.k], T.suma)}</td></tr>`).concat([`<tr><td>Donaciones económicas</td><td class="r">${money(T.don)}</td><td></td></tr>`, `<tr><td>Alquiler de cafetines</td><td class="r">${money(T.caf)}</td><td></td></tr>`]), { foot: `<tr class="tot"><td>SUMA POR RUBROS</td><td class="r">${money(T.suma)}</td><td></td></tr>` })}
-      <br><b>2. CUADRE DE CAJA</b>${ptable(['Concepto', 'Monto'], [['Cobrado según rubros', T.suma], ...(T.enBanco ? [['(−) Rubros pagados en banco', T.enBanco]] : []), ...(CFG.cuadre.incluirDonaciones ? [['(+) Donaciones', T.don]] : []), ['(−) Depositado en banco', T.dep], ['(−) No remesado', T.nr], ['(−) Devoluciones', T.dev], ['Efectivo que debe haber', T.esperado], ['(−) Efectivo en caja (último arqueo ' + (PC.arq ? fdate(PC.arq.fecha) + ' ' + money(PC.contado) : '—') + (PC.delta ? ' y movimientos posteriores ' + money(PC.delta) : '') + ')', ef]].map(([a, b]) => `<tr><td>${a}</td><td class="r">${money(b)}</td></tr>`), { foot: `<tr class="tot"><td>DIFERENCIA ${Math.abs(dif) < .01 ? '✔ CUADRA' : dif > 0 ? '(FALTANTE)' : '(SOBRANTE)'}</td><td class="r">${money(dif)}</td></tr>` })}
+      <br><b>2. EFECTIVO EN CAJA</b>${ptable(['Concepto', 'Monto'], (PC.arq ? [['Contado en el último arqueo (' + fdate(PC.arq.fecha) + ')', PC.contado], ['(+) Cobrado en efectivo después del arqueo', PC.det.ing], ['(−) Depositado después del arqueo', PC.det.dep], ...(PC.det.nr ? [['(−) No remesado', PC.det.nr]] : []), ...(PC.det.dev ? [['(−) Devoluciones', PC.det.dev]] : [])] : [['Cobrado según rubros (sin banco)', T.efectivo], ['(−) Depositado, no remesado y devoluciones', T.dep + T.nr + T.dev]]).map(([a, b]) => `<tr><td>${a}</td><td class="r">${money(b)}</td></tr>`), { foot: `<tr class="tot"><td>EFECTIVO QUE DEBE HABER EN CAJA</td><td class="r">${money(ef)}</td></tr>` })}
+      <p class="pnote">Total cobrado en recibos ${money(T.pago)} · suma de rubros ${money(T.suma)}${Math.abs(T.pago - T.suma) >= .01 ? ` · recibos con pago sin rubro: ${money(T.pago - T.suma)}` : ' ✔'}</p>
       <br><b>3. COBRADO POR NIVEL</b>${ptable(['Nivel', 'Monto', '%'], Object.entries(T.niv).map(([n, m]) => `<tr><td>${esc(n)}</td><td class="r">${money(m)}</td><td class="r">${pct(m, T.pago)}</td></tr>`))}
       ${firmasDoc('cuadre')}</div>`);
   };
