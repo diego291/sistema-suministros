@@ -141,6 +141,44 @@ setTimeout(() => {
   d.afterSave = async (saved, isNew) => { if (as) as(saved, isNew); const o = _estAntes; _estAntes = null; if (!o || isNew) return;
     if (['nombre', 'nie', 'grado', 'seccion', 'opcion'].some(k => String(o[k] || '') !== String(saved[k] || ''))) { const n = await propagarEstudiante(o, { nombre: saved.nombre, nie: saved.nie, grado: saved.grado, seccion: saved.seccion, opcion: saved.opcion }); if (n) toast(`Cambios aplicados a ${n} recibo(s) del estudiante`, 'ok', 4000); } };
 }, 0);
+/* ---------- Control de pagos repetidos o de más, por rubro (Catálogo › rubro › Control) ---------- */
+const CTL_TIPOS = [{ v: 'no', l: 'Sin control' }, { v: 'una', l: 'Una sola vez por año' }, { v: 'cant', l: 'Máximo en cantidad por año' }, { v: 'dinero', l: 'Máximo en dinero por año' }];
+const CTL_ACC = [{ v: 'confirmar', l: 'Avisar y pedir confirmación al guardar' }, { v: 'avisar', l: 'Solo avisar' }];
+/** Control del rubro: el configurado o uno sugerido (alimentos = cuota × meses del año; carnet = una vez) */
+function ctlRubro(rb) {
+  if (rb.ctl && rb.ctl.tipo) return Object.assign({ accion: 'confirmar', sug: false }, rb.ctl);
+  if (rb.meses && num(rb.p)) return { tipo: 'dinero', lim: r2(num(rb.p) * (mesesCobro().length || 10)), accion: 'confirmar', sug: true };
+  if (/carn[eé]t/i.test(rb.l || '')) return { tipo: 'una', lim: 1, accion: 'confirmar', sug: true };
+  return { tipo: 'no', sug: true };
+}
+/** Recibos previos del mismo alumno (por NIE o nombre), sin anulados ni el recibo actual */
+function recibosDelAlumno(nombre, nie, selfId) {
+  const n = norm(nombre), ni = String(nie || '').trim(); if (!n && !ni) return [];
+  return Store.all('recibos').filter(x => x._id !== selfId && !isTrue(x.nulo) && ((ni && String(x.nie || '') === ni) || (n && norm(x.nombre) === n)));
+}
+/** Estado de un rubro para el alumno: lo pagado antes y si el monto actual se pasa del límite */
+function estadoCtl(rb, prev, actual) {
+  const c = ctlRubro(rb); if (c.tipo === 'no') return null;
+  const con = prev.filter(x => num(x['r_' + rb.k]) > 0).sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)));
+  const unid = v => num(rb.p) ? r2(num(v) / num(rb.p)) : (num(v) ? 1 : 0);
+  const din = r2(con.reduce((a, x) => a + num(x['r_' + rb.k]), 0)), cant = r2(con.reduce((a, x) => a + unid(x['r_' + rb.k]), 0));
+  const ult = con[con.length - 1]; const ref = ult ? `${recNum(ult)} · ${fdate(ult.fecha).slice(0, 5)}` : '';
+  const cur = num(actual), lim = num(c.lim);
+  const e = { c, din, cant, ult, ref, pasa: false, falta: 0, badge: '', cls: 'g', msg: '' };
+  if (c.tipo === 'una') {
+    if (con.length) { e.badge = `✔ Ya pagado · ${ref}`; e.cls = 'e'; } else e.badge = 'Pendiente';
+    if (cur && con.length) { e.pasa = true; e.msg = `Ya pagó ${esc(rb.l)} el <b>${fdate(ult.fecha)}</b> en el recibo <b>${esc(recNum(ult))}</b>${con.length > 1 ? ` (y ${con.length - 1} vez/veces más)` : ''}.`; }
+  } else if (c.tipo === 'cant') {
+    e.falta = Math.max(0, r2(lim - cant));
+    e.badge = cant ? (e.falta ? `Lleva ${nfmt(cant)} de ${nfmt(lim)} · último ${ref}` : `✔ Completo (${nfmt(lim)}) · ${ref}`) : 'Pendiente'; e.cls = cant ? (e.falta ? 'w' : 'e') : 'g';
+    const tot = r2(cant + unid(cur)); if (cur && tot > lim) { e.pasa = true; e.msg = `Ya lleva <b>${nfmt(cant)}</b> de ${nfmt(lim)}. Con este recibo serían <b>${nfmt(tot)}</b>: se pasa por <b>${nfmt(r2(tot - lim))}</b>.`; }
+  } else if (c.tipo === 'dinero') {
+    e.falta = Math.max(0, r2(lim - din)); const mesTxt = rb.meses && num(rb.p) && e.falta ? ` (${nfmt(r2(e.falta / num(rb.p)))} ${r2(e.falta / num(rb.p)) === 1 ? 'mes' : 'meses'})` : '';
+    e.badge = din ? (e.falta ? `Pagado ${money(din)} · faltan ${money(e.falta)}${mesTxt}` : `✔ Completo (${money(lim)}) · ${ref}`) : `Pendiente · ${money(lim)}`; e.cls = din ? (e.falta ? 'w' : 'e') : 'g';
+    const tot = r2(din + cur); if (cur && tot > lim + 0.004) { e.pasa = true; e.msg = `Ya lleva <b>${money(din)}</b> de ${money(lim)}. Con este pago serían <b>${money(tot)}</b>: se pasa por <b>${money(r2(tot - lim))}</b>.${e.falta ? ` Solo faltan ${money(e.falta)}${mesTxt}.` : ' Ya estaba completo.'}`; }
+  }
+  return e;
+}
 /* ---------- Recibo anterior y control de secuencia (panel del formulario de recibos) ---------- */
 function resumenRecAnterior(serie, n, selfId) {
   const rs = Store.all('recibos').filter(r => (r.serie || '') === (serie || '') && r._id !== selfId);
@@ -185,7 +223,7 @@ function openRecibo(row, done, pre) {
   const isNew = !row;
   const serie0 = (row && row.serie) || LS.get('lastSerie', CFG.serieDef || 'B');
   row = Object.assign({ serie: serie0, numero: nextNumSerie(serie0), fecha: fechaRecDefault(), tipo: 'Estudiante' }, pre || {}, row || {});
-  const rbs = rubrosOn();
+  const rbs = rubrosOn(); let pintaCtlRef = null;
   let lines = (row.unif || []).map(l => Object.assign({}, l));
   let pagoAuto = row.pago === '' || row.pago === undefined || Math.abs(num(row.pago) - num(row.total)) < 0.005;
   const html = `<div class="form">
@@ -208,7 +246,7 @@ function openRecibo(row, done, pre) {
     ${(() => {
       const celda = rb => { const v = num(row['r_' + rb.k]); const q = rb.meses ? (num(row.meses_alim) || (rb.p && v ? r2(v / rb.p) : '')) : (rb.p && v ? r2(v / rb.p) : '');
         return `<div class="rub ${v ? 'on' : ''}" data-rk="${rb.k}"><span>${esc(rb.l)}${rb.off ? ' <small class="warn-t" style="display:inline">(oculto)</small>' : ''}<small>${rb.p ? money(rb.p) + ' / ' + esc(rb.u || 'unid.') : 'monto libre'}</small></span>
-        <input class="in" type="number" step="any" data-q placeholder="${rb.meses ? 'meses' : 'cant.'}" value="${q || ''}" ${rb.p ? '' : 'disabled'}><input class="in" type="number" step="any" data-m placeholder="$" value="${v || ''}"></div>`; };
+        <input class="in" type="number" step="any" data-q placeholder="${rb.meses ? 'meses' : 'cant.'}" value="${q || ''}" ${rb.p ? '' : 'disabled'}><input class="in" type="number" step="any" data-m placeholder="$" value="${v || ''}"><div class="rub-st"></div></div>`; };
       const freq = new Set(rubrosFrecuentes().map(x => x.k));
       const arriba = rbs.filter(rb => freq.has(rb.k) || num(row['r_' + rb.k]));
       const resto = rbs.filter(rb => !arriba.includes(rb) && !rb.off);
@@ -275,6 +313,11 @@ function openRecibo(row, done, pre) {
     if (!r.nombre && !r.nulo) { toast('Falta el nombre', 'bad'); return false; }
     const msg = MOD.recibos.validate(r);
     if (msg && !(await confirmBox(msg.slice(1), 'Guardar de todos modos'))) return false;
+    if (!r.nulo) {
+      const prevA = recibosDelAlumno(r.nombre, r.nie, row._id);
+      const malos = rbs.map(rb => ({ rb, e: estadoCtl(rb, prevA, r['r_' + rb.k]) })).filter(x => x.e && x.e.pasa && x.e.c.accion !== 'avisar');
+      if (malos.length && !(await confirmBox(`<b>Este recibo cobra algo que ya estaba pagado o se pasa del límite:</b><ul style="margin:8px 0 0;padding-left:18px">${malos.map(x => `<li><b>${esc(x.rb.l)}:</b> ${x.e.msg}</li>`).join('')}</ul><p style="margin:10px 0 0">¿Guardar de todos modos?</p>`, 'Guardar de todos modos'))) return false;
+    }
     if (!r.nulo && r.pago !== r.total && r.total && !(await confirmBox(`El pago (${money(r.pago)}) no coincide con la suma de rubros (${money(r.total)}). ¿Guardar así?`, 'Guardar'))) return false;
     MOD.recibos.beforeSave(r);
     if (!r.est_id) { const e = Store.all('estudiantes').find(x => (r.nie && String(x.nie) === String(r.nie)) || norm(x.nombre) === norm(r.nombre)); if (e) r.est_id = e._id; }
@@ -341,7 +384,7 @@ function openRecibo(row, done, pre) {
       setSel('#r_grado', v.grado); setSel('#r_seccion', v.seccion); setSel('#r_opcion', v.opcion); pintaEst(false); info(); refresh();
     };
   };
-  attachAC($('#r_nombre'), REF.estudiantes, it => { const e = it.row; $('#r_grado').value = e.grado || ''; $('#r_seccion').value = e.seccion || ''; $('#r_opcion').value = e.opcion || ''; $('#r_nie').value = e.nie || ''; row.est_id = e._id; setSel('#r_grado', e.grado); setSel('#r_seccion', e.seccion); setSel('#r_opcion', e.opcion); pintaEst(false); info(); });
+  attachAC($('#r_nombre'), REF.estudiantes, it => { const e = it.row; $('#r_grado').value = e.grado || ''; $('#r_seccion').value = e.seccion || ''; $('#r_opcion').value = e.opcion || ''; $('#r_nie').value = e.nie || ''; row.est_id = e._id; setSel('#r_grado', e.grado); setSel('#r_seccion', e.seccion); setSel('#r_opcion', e.opcion); pintaEst(false); info(); if (typeof pintaCtlRef === 'function') pintaCtlRef(); });
   box.addEventListener('input', e => {
     const d = e.target.closest('.rub');
     if (d && e.target.dataset.q !== undefined) { const rb = rbs.find(x => x.k === d.dataset.rk); const q = e.target.value; $('[data-m]', d).value = q === '' ? '' : r2(num(q) * rb.p); }
@@ -367,9 +410,25 @@ function openRecibo(row, done, pre) {
     const cp = $('[data-rp=cp]', c); if (cp && d.prev) cp.onmousedown = e => {
       e.preventDefault(); const q = d.prev;
       $('#r_nombre').value = q.nombre || ''; $('#r_nie').value = q.nie || ''; if (q.tipo) $('#r_tipo').value = q.tipo; row.est_id = q.est_id || '';
-      setSel('#r_grado', q.grado); setSel('#r_seccion', q.seccion); setSel('#r_opcion', q.opcion); pintaEst(false); info(); refresh(); toast('Datos del alumno copiados del recibo anterior', 'ok', 1800);
+      setSel('#r_grado', q.grado); setSel('#r_seccion', q.seccion); setSel('#r_opcion', q.opcion); pintaEst(false); info(); refresh(); if (pintaCtlRef) pintaCtlRef(); toast('Datos del alumno copiados del recibo anterior', 'ok', 1800);
     };
   };
+  /* Estado de cada rubro con control (ya pagado / cuánto falta / se pasa) */
+  const pintaCtl = () => {
+    const prev = recibosDelAlumno($('#r_nombre').value, $('#r_nie').value, row._id), hay = !!($('#r_nombre').value.trim() || $('#r_nie').value.trim());
+    $$('.rub').forEach(d => {
+      const rb = rbs.find(x => x.k === d.dataset.rk), st = $('.rub-st', d); if (!rb || !st) return;
+      const e = hay ? estadoCtl(rb, prev, $('[data-m]', d).value) : null;
+      const h = !e ? '' : `<span class="rub-b ${e.cls}">${e.badge}</span>${e.pasa ? `<div class="rub-msg">⚠ ${e.msg}${e.falta && !$('[data-m]', d).readOnly ? ` <button type="button" class="btn sm" data-falta="${e.falta}">Poner lo que falta (${rb.meses || ctlRubro(rb).tipo === 'dinero' ? money(e.falta) : nfmt(e.falta)})</button>` : ''}</div>` : ''}`;
+      d.classList.toggle('ctl-bad', !!(e && e.pasa));
+      if (st.dataset.h === h) return; st.dataset.h = h; st.innerHTML = h;
+      const bf = $('[data-falta]', st); if (bf) bf.onmousedown = ev => { ev.preventDefault(); const f = num(bf.dataset.falta), c = ctlRubro(rb); const m = c.tipo === 'cant' ? r2(f * num(rb.p)) : f; $('[data-m]', d).value = m || ''; const qi = $('[data-q]', d); if (qi && num(rb.p)) qi.value = r2(m / num(rb.p)); refresh(); pintaCtl(); };
+    });
+    const mas = $('#r_mas'); if (mas && !mas.open && $$('.rub.ctl-bad', mas).length) mas.open = true;
+  };
+  box.addEventListener('input', () => setTimeout(pintaCtl, 0)); $('#r_nombre').addEventListener('change', pintaCtl); $('#r_nie').addEventListener('change', pintaCtl);
+  $('#r_nombre').addEventListener('blur', () => setTimeout(pintaCtl, 150));
+  pintaCtl(); pintaCtlRef = pintaCtl;
   $('#r_numero').addEventListener('input', pintaPrev); $('#r_serie').addEventListener('change', () => setTimeout(pintaPrev, 0));
   pintaPrev();
   const fchk = () => { const f = $('#r_fecha').value, e = $('#r_fchk'); if (!e) return; if (!f) { e.innerHTML = '<b class="bad-t">⚠ Falta la fecha</b>'; return; } const dia = cap(dobj(f).toLocaleDateString('es-SV', { weekday: 'long', day: 'numeric', month: 'long' })); e.innerHTML = f === today() ? `<span class="ok-t">● ${dia} · hoy</span>` : `<b class="warn-t">⚠ ${dia} · NO es la fecha de hoy</b>`; $('#r_fecha').style.outline = f === today() ? '' : '2px solid var(--warn)'; };

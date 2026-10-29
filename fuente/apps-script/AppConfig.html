@@ -199,7 +199,7 @@ defView('cfg:catalogo', 'Catálogo de cobros y productos', el => {
     <div class="card ct-d">${!r ? '<div class="empty">Sin rubros.</div>' : `
       <div class="bar" style="margin:0"><b style="font-size:17px">${misP.length ? '👕' : r.meses ? '🗓️' : '🧾'} ${esc(r.l)}</b>${r.off ? ' <span class="tag warn">oculto en el recibo</span>' : ''}<span class="sp"></span><button class="btn sm" id="ctDup">⧉ Duplicar</button></div>
       <div class="ct-kpi"><div><small>Cobrado este año</small><b>${money(V.dinero)}</b></div><div><small>${r.meses ? 'Meses cobrados' : 'Unidades vendidas'}</small><b>${(() => { const u = misP.reduce((a, p) => a + p.tallas.reduce((b, t) => { const x = g[norm(p.l) + '|' + norm(t.t)]; return b + (x ? (x.ventas || []).reduce((c, v) => c + num(v.cantidad), 0) : 0); }, 0), 0); return u ? nfmt(u) : V.unid === null ? '—' : nfmt(V.unid); })()}</b></div><div><small>Recibos</small><b>${nfmt(V.recibos)}</b></div>${stkRubro(r) !== null ? `<div><small>Disponible</small><b class="${colorStk(stkRubro(r), minRubro(r))}">${nfmt(stkRubro(r))}</b></div>` : ''}</div>
-      <div class="tabs ct-tabs">${[['gen', 'General'], ['tallas', misP.length ? `Productos y tallas (${misP.length})` : 'Productos y tallas'], ['inv', 'Inventario'], ['adv', 'Avanzado']].map(([k, l]) => `<button data-ct="${k}" class="${tab === k ? 'act' : ''}">${l}</button>`).join('')}</div>
+      <div class="tabs ct-tabs">${[['gen', 'General'], ['tallas', misP.length ? `Productos y tallas (${misP.length})` : 'Productos y tallas'], ['inv', 'Inventario'], ['ctl', ctlRubro(r).tipo !== 'no' ? 'Control ✔' : 'Control'], ['adv', 'Avanzado']].map(([k, l]) => `<button data-ct="${k}" class="${tab === k ? 'act' : ''}">${l}</button>`).join('')}</div>
       <div id="ctB"></div>`}</div></div>`;
     bindTabs(el);
     $('#ctQ', el).oninput = debounce(e => { q = e.target.value; draw(); setTimeout(() => { const i = $('#ctQ', el); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }, 0); }, 200);
@@ -258,6 +258,19 @@ defView('cfg:catalogo', 'Catálogo de cobros y productos', el => {
       const ca = $('#ctA', B); if (ca) ca.onclick = () => { if (!sinGuardar()) openForm('unif_inv', { mov: 'AJUSTE −', fecha: today(), tipo: misP[0].l, talla: misP[0].tallas[0] && misP[0].tallas[0].t }, { onDone: draw }); };
       $$('[data-kx]', B).forEach(b => b.onclick = () => { const [t, z] = b.dataset.kx.split('|'); kardexUniforme(t, z, draw); });
       $$('[data-go]', B).forEach(a => a.onclick = e => { e.preventDefault(); go(a.dataset.go); });
+    }
+    else if (tab === 'ctl') {
+      const c = ctlRubro(r); const opt = (arr, v) => arr.map(o => `<option value="${o.v}" ${o.v === v ? 'selected' : ''}>${esc(o.l)}</option>`).join('');
+      const fila = x => { const k = ctlRubro(x); return `<tr data-k2="${x.k}" style="cursor:pointer"><td>${esc(x.l)}</td><td class="${k.tipo === 'no' ? 'muted' : ''}">${esc((CTL_TIPOS.find(o => o.v === k.tipo) || {}).l || '')}${k.sug && k.tipo !== 'no' ? ' <small class="muted">(sugerido)</small>' : ''}</td><td>${k.tipo === 'dinero' ? money(k.lim) : k.tipo === 'cant' ? nfmt(k.lim) : k.tipo === 'una' ? '1' : '—'}</td><td>${k.tipo === 'no' ? '—' : esc((CTL_ACC.find(o => o.v === k.accion) || {}).l || '')}</td></tr>`; };
+      B.innerHTML = `<p class="muted" style="margin-top:0;font-size:12.5px">Al digitar un recibo, cada rubro con control muestra lo que ese alumno ya pagó en el año (buscando por NIE o nombre, sin contar anulados) y avisa si se repite o se pasa.</p>
+        <div class="form"><label class="f"><span>Control de pagos repetidos</span><select class="in" id="ctlT">${opt(CTL_TIPOS, c.tipo)}</select></label>
+        <label class="f" ${c.tipo === 'dinero' || c.tipo === 'cant' ? '' : 'style="display:none"'}><span>${c.tipo === 'dinero' ? 'Máximo por alumno en el año ($)' : 'Máximo de unidades por alumno en el año'}</span><input class="in" type="number" step="any" id="ctlL" value="${c.lim ?? ''}"></label>
+        <label class="f" ${c.tipo === 'no' ? 'style="display:none"' : ''}><span>Cuando se repita o se pase</span><select class="in" id="ctlA">${opt(CTL_ACC, c.accion || 'confirmar')}</select></label></div>
+        ${c.sug && c.tipo !== 'no' ? `<div class="alert info" style="margin-top:8px">Este control es una sugerencia (${r.meses ? 'cuota × meses de cobro del año' : 'carnet: una vez por año'}). Ya está funcionando; cámbielo si lo necesita y pulse 💾 Guardar.</div>` : ''}
+        <h4 style="margin:16px 0 6px">Resumen de controles</h4><table class="t"><thead><tr><th>Rubro</th><th>Control</th><th>Límite</th><th>Acción</th></tr></thead><tbody>${rbs.map(fila).join('')}</tbody></table>`;
+      const upd = () => { const t = $('#ctlT', B).value; const prev = ctlRubro(r); r.ctl = { tipo: t, lim: t === 'una' ? 1 : num(($('#ctlL', B) || {}).value) || (t === prev.tipo ? prev.lim : (t === 'dinero' ? num(r.p) : 1)), accion: ($('#ctlA', B) || {}).value || 'confirmar' }; marcar(); draw(); };
+      $('#ctlT', B).onchange = upd; $('#ctlL', B).onchange = upd; $('#ctlA', B).onchange = upd;
+      $$('[data-k2]', B).forEach(tr => tr.onclick = () => { sel = tr.dataset.k2; LS.set('catSel', sel); draw(); });
     }
     else if (tab === 'adv') {
       B.innerHTML = `<div class="form"><label class="f wide"><span>Palabras clave (al importar: recibos sin desglose cuyo concepto contenga estas palabras se asignan a este rubro; separe con |)</span><input class="in" data-r="kw" value="${esc(r.kw || '')}"></label>
