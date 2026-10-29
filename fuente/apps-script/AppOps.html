@@ -583,6 +583,34 @@ function importarPlantillas(done) {
   });
   pintar();
 }
+/* ---------- Formato profesional del cuerpo de documentos ----------
+   Las líneas cortas "Etiqueta: {{campo}}" se muestran como filas de formulario (etiqueta en negrita y
+   el dato sobre una línea), agrupadas; el resto queda como párrafos justificados. */
+const RE_FILA_DOC = /^\s*([^{}\n]{1,60}?)[\s:.…_]*(\$)?\s*\{\{\s*([\w_]+)\s*\}\}[\s._:]*$/;
+const CAMPOS_AUTO_TXT = ['institucion', 'organismo', 'lugar', 'anio'];
+function limpiaEtiqueta(t) { return String(t || '').replace(/[\s:.…_$]+$/g, '').replace(/^[\s.…_]+/, '').trim(); }
+/** Etiqueta legible de un campo dato_N tomada del texto que lo precede en la plantilla */
+function etiquetaCampo(contenido, k) {
+  const m = [...String(contenido || '').matchAll(new RegExp('([^\\n{}]{0,60})\\{\\{\\s*' + k + '\\s*\\}\\}', 'g'))][0];
+  let t = limpiaEtiqueta(m ? m[1] : '');
+  if (t.length > 38) t = '…' + t.slice(-36).replace(/^\S*\s/, '');
+  return t || cap(k.replace(/_/g, ' '));
+}
+function cuerpoDoc(tpl, val, fill) {
+  const ls = String(tpl || '').replace(/\r/g, '').split('\n'); const out = []; let filas = [], par = [];
+  const cerrarPar = () => { if (par.length) out.push(`<p>${par.map(l => esc(fill(l))).join('<br>')}</p>`); par = []; };
+  const cerrarFilas = () => { if (filas.length) out.push(`<table class="pform">${filas.join('')}</table>`); filas = []; };
+  ls.forEach((l, i) => {
+    if (!l.trim()) { cerrarPar(); const sig = ls.slice(i + 1).find(x => x.trim()); if (!(filas.length && sig && RE_FILA_DOC.test(sig))) cerrarFilas(); return; }
+    const m = l.match(RE_FILA_DOC);
+    if (m && limpiaEtiqueta(m[1]) && !CAMPOS_AUTO_TXT.includes(m[3]) && (/:\s*\$?\s*\{\{/.test(l) || !/\s(de|del|en|a|por|con|y)$/i.test(limpiaEtiqueta(m[1])))) {
+      cerrarPar(); const v = val(m[3]); const din = m[2] || /monto|isss|afp|renta|total|cantidad|valor/i.test(m[1]);
+      filas.push(`<tr><td class="pl">${esc(fill(limpiaEtiqueta(m[1])))}</td><td class="pv ${m[2] ? 'r' : ''}">${v ? (din && m[2] ? '$ ' : '') + esc(v) : '&nbsp;'}</td></tr>`); return;
+    }
+    cerrarFilas(); par.push(l);
+  });
+  cerrarPar(); cerrarFilas(); return out.join('');
+}
 defView('d:generar', 'Generar documento', (el, p) => {
   const doc = p.doc ? Store.get('documentos', p.doc) : null;
   let datos = {}; try { datos = doc && doc.datos ? JSON.parse(doc.datos) : {}; } catch (e) { }
@@ -590,12 +618,13 @@ defView('d:generar', 'Generar documento', (el, p) => {
   let pl = doc ? Store.all('plantillas').find(x => x.nombre === doc.plantilla) : p.id ? Store.get('plantillas', p.id) : Store.all('plantillas')[0];
   const auto = () => Object.assign({ fecha_larga: flong(datos.fecha || today()), lugar: CFG.inst.lugar, institucion: CFG.inst.nombre, organismo: CFG.inst.organismo, anio: Store.year }, Object.fromEntries(firmantes().map(f => [f.k, f.nombre])), Object.fromEntries(firmantes().map(f => ['cargo_' + f.k, f.cargo])));
   const vars = () => { const s = (pl ? pl.contenido + '\n' + (pl.firmas || '') : ''); return [...new Set([...s.matchAll(/\{\{\s*([\w_]+)\s*\}\}/g)].map(m => m[1]))]; };
-  const fill = s => String(s || '').replace(/\{\{\s*([\w_]+)\s*\}\}/g, (m, k) => { const a = auto(); const v = datos[k] !== undefined && datos[k] !== '' ? datos[k] : a[k]; return v !== undefined && v !== '' ? v : '________'; });
+  const val = k => { const a = auto(); const v = datos[k] !== undefined && datos[k] !== '' ? datos[k] : a[k]; return v !== undefined && v !== null && v !== '' ? String(v) : ''; };
+  const fill = s => String(s || '').replace(/\{\{\s*([\w_]+)\s*\}\}/g, (m, k) => val(k) || '________');
   const diseno = () => ({ alin: datos._alin || pl.f_alin || 'centro', esp: datos._esp || pl.f_esp || 'amplio', sello: datos._sello || pl.f_sello || 'no', ref: datos._ref || pl.f_ref || 'si', titulo: datos._titulo !== undefined ? datos._titulo : (pl.f_titulo || '') });
   const numDoc = () => doc ? doc.numero : `${Store.year}-${String(Store.all('documentos').length + 1).padStart(3, '0')}`;
   const sel = (k, arr, v) => `<select class="in" data-d="${k}">${arr.map(o => `<option value="${o.v}" ${o.v === v ? 'selected' : ''}>${esc(o.l)}</option>`).join('')}</select>`;
   const html = () => {
-    const body = fill(pl.contenido).split(/\n{2,}/).map(par => `<p>${esc(par).replace(/\n/g, '<br>')}</p>`).join('');
+    const body = cuerpoDoc(pl.contenido, val, fill);
     const fs = String(pl.firmas || '').split('\n').map(l => l.split('|').map(x => fill(x.trim()))).filter(x => x[0] || x[1]);
     const op = diseno();
     const fechaArriba = !/\{\{\s*fecha_larga\s*\}\}/.test(pl.contenido) ? `${CFG.inst.lugar || ''}${CFG.inst.lugar ? ', ' : ''}${flong(datos.fecha || today())}` : '';
@@ -608,7 +637,7 @@ defView('d:generar', 'Generar documento', (el, p) => {
     const a = auto();
     el.innerHTML = `<div class="grid g2"><div class="card"><div class="bar"><select class="in" id="dP" style="flex:1">${ps.map(x => `<option value="${x._id}" ${x._id === pl._id ? 'selected' : ''}>${esc(x.nombre)}</option>`).join('')}</select><button class="btn" id="dE">✎ Editar plantilla</button><button class="btn" id="dNw">+ Nueva</button><button class="btn" id="dIm" title="Importar desde Word o texto">📥 Importar</button></div>
       <div class="form"><label class="f"><span>Fecha del documento</span><input class="in" type="date" data-v="fecha" value="${esc(datos.fecha || today())}"></label>
-      ${vars().filter(v => !(v in a)).map(v => `<label class="f ${/cuerpo|detalle/.test(v) ? 'wide' : ''}"><span>${esc(cap(v.replace(/_/g, ' ')))}</span>${/cuerpo|detalle/.test(v) ? `<textarea class="in" rows="4" data-v="${v}">${esc(datos[v] || '')}</textarea>` : `<input class="in" data-v="${v}" value="${esc(datos[v] || '')}">`}</label>`).join('')}</div>
+      ${vars().filter(v => !(v in a)).map(v => `<label class="f ${/cuerpo|detalle/.test(v) ? 'wide' : ''}"><span>${esc(/^dato_\d+$/.test(v) ? etiquetaCampo(pl.contenido + '\n' + (pl.firmas || ''), v) : cap(v.replace(/_/g, ' ')))}</span>${/cuerpo|detalle/.test(v) ? `<textarea class="in" rows="4" data-v="${v}">${esc(datos[v] || '')}</textarea>` : `<input class="in" data-v="${v}" value="${esc(datos[v] || '')}">`}</label>`).join('')}</div>
       ${vars().some(v => v in a && v !== 'fecha_larga') ? `<details style="margin-top:10px"><summary class="muted" style="cursor:pointer">Datos automáticos (institución, firmantes…) · cambiar solo para este documento</summary><div class="form" style="margin-top:8px">${vars().filter(v => v in a && v !== 'fecha_larga').map(v => `<label class="f"><span>${esc(cap(v.replace(/_/g, ' ')))}</span><input class="in" data-v="${v}" value="${esc(datos[v] || '')}" placeholder="${esc(a[v] || '')}"></label>`).join('')}</div></details>` : ''}
       <div style="margin-top:12px;padding:10px;border:1px solid var(--ln);border-radius:var(--r)"><b style="font-size:13px">✍️ Formato, firmas y sello</b>
         <div class="form" style="margin-top:6px"><label class="f"><span>Título del documento (opcional)</span><input class="in" data-d="_titulo" value="${esc(diseno().titulo)}" placeholder="Ej.: Solicitud de autorización de compra"></label><label class="f"><span>Número de referencia arriba</span>${sel('_ref', [{ v: 'si', l: 'Mostrar (Ref.: ' + numDoc() + ')' }, { v: 'no', l: 'No mostrar' }], diseno().ref)}</label><label class="f"><span>Posición de las firmas</span>${sel('_alin', FIRMA_ALIN, diseno().alin)}</label><label class="f"><span>Espacio para firmar</span>${sel('_esp', FIRMA_ESP, diseno().esp)}</label><label class="f"><span>Recuadro para sello</span>${sel('_sello', FIRMA_SELLO, diseno().sello)}</label></div>
