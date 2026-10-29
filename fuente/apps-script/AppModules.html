@@ -141,6 +141,46 @@ setTimeout(() => {
   d.afterSave = async (saved, isNew) => { if (as) as(saved, isNew); const o = _estAntes; _estAntes = null; if (!o || isNew) return;
     if (['nombre', 'nie', 'grado', 'seccion', 'opcion'].some(k => String(o[k] || '') !== String(saved[k] || ''))) { const n = await propagarEstudiante(o, { nombre: saved.nombre, nie: saved.nie, grado: saved.grado, seccion: saved.seccion, opcion: saved.opcion }); if (n) toast(`Cambios aplicados a ${n} recibo(s) del estudiante`, 'ok', 4000); } };
 }, 0);
+/* ---------- Recibo anterior y control de secuencia (panel del formulario de recibos) ---------- */
+function resumenRecAnterior(serie, n, selfId) {
+  const rs = Store.all('recibos').filter(r => (r.serie || '') === (serie || '') && r._id !== selfId);
+  const nums = new Set(rs.map(r => num(r.numero)));
+  const menores = rs.filter(r => num(r.numero) < n);
+  const prev = n ? menores.sort((a, b) => num(b.numero) - num(a.numero))[0] || null : rs.sort((a, b) => num(b.numero) - num(a.numero))[0] || null;
+  const alertas = [];
+  if (n && nums.has(n)) alertas.push({ t: 'e', m: `El N° <b>${esc(serie)}-${n}</b> ya está registrado` });
+  else if (n && prev && n !== num(prev.numero) + 1) alertas.push({ t: 'w', m: `El N° ${n} no sigue al anterior (${num(prev.numero)}): ${n - num(prev.numero) - 1 === 1 ? 'se salta 1 número' : 'se saltan ' + (n - num(prev.numero) - 1)}` });
+  else if (n && !prev && rs.length) { const mayor = rs.reduce((m, r) => Math.max(m, num(r.numero)), 0); if (mayor > n) alertas.push({ t: 'w', m: `El N° ${n} es menor que los ya digitados (último: ${mayor})` }); }
+  if (prev) {
+    const top = num(prev.numero), falt = [];
+    const vent = rs.map(r => num(r.numero)).filter(x => x >= top - 60 && x <= top); const piso = vent.length ? Math.min(...vent) : top;
+    for (let k = top - 1; k > piso && falt.length < 6; k--) if (!nums.has(k)) falt.push(k);
+    falt.reverse();
+    if (falt.length) alertas.push({ t: 'e', m: falt.length === 1 ? `Falta el <b>${falt[0]}</b> (entre ${falt[0] - 1} y ${falt[0] + 1})` : `Faltan: <b>${falt.slice(0, 5).join(', ')}${falt.length > 5 ? '…' : ''}</b>` });
+  }
+  return { prev, alertas, n, serie };
+}
+function htmlRecAnterior(d, min) {
+  const q = d.prev, al = d.alertas, malo = al.length > 0;
+  const chip = malo ? `<span class="rp-chip e">⚠ ${al.length} alerta${al.length > 1 ? 's' : ''}</span>` : (q ? '<span class="rp-chip g">✔ OK</span>' : '');
+  const tg = `<button type="button" class="rp-tg" data-rp="tg" title="${min ? 'Mostrar' : 'Minimizar'}">${min ? '▸' : '▾'}</button>`;
+  if (!q) return `<div class="rp ${malo ? 'mal' : ''} ${min ? 'min' : ''}"><div class="rp-h"><span class="rp-l">Recibo anterior</span>${chip}${tg}</div>${min ? '' : `<div class="muted" style="margin-top:6px">Primer recibo de la serie ${esc(d.serie || '')}.</div>${al.map(a => `<div class="rp-al ${a.t}">⚠ ${a.m}</div>`).join('')}`}</div>`;
+  const nombre = String(q.nombre || '').trim(), corto = nombre.split(/\s+/).slice(0, 2).join(' ') + (nombre.split(/\s+/).length > 2 ? ' ' + nombre.split(/\s+/)[2][0] + '.' : '');
+  const grado = [q.grado, q.seccion ? 'Sección ' + q.seccion : '', q.opcion].filter(Boolean).join(' · ');
+  if (min) return `<div class="rp min ${malo ? 'mal' : ''}"><div class="rp-h">${tg}<span class="rp-n">${esc(recNum(q))}</span><span class="rp-s">${esc(corto)}</span><b class="rp-t">${isTrue(q.nulo) ? 'ANULADO' : money(q.pago ?? q.total)}</b>${malo ? `<span class="rp-chip e">⚠ ${al.length}</span>` : '<span class="rp-chip g">✔</span>'}</div>${malo ? `<div class="rp-al ${al[0].t}" style="margin-top:6px">⚠ ${al[0].m}${al.length > 1 ? ` <i>(+${al.length - 1})</i>` : ''}</div>` : ''}</div>`;
+  const rbs = rubrosOn(); const filas = [];
+  (q.unif || []).forEach(l => filas.push([`${l.prod}${l.talla && norm(l.talla) !== 'unica' ? ' · talla ' + l.talla : ''}${num(l.cant) > 1 ? ' ×' + num(l.cant) : ''}`, num(l.cant) * num(l.precio)]));
+  const lock = new Set((q.unif || []).map(l => (prodDe(l.prod) || {}).rubro).filter(Boolean));
+  rbs.forEach(rb => { const v = num(q['r_' + rb.k]); if (!v || lock.has(rb.k)) return; const m = rb.meses ? (num(q.meses_alim) || (rb.p ? r2(v / rb.p) : 0)) : 0; filas.push([rb.l + (m ? ` (${nfmt(m)} ${m === 1 ? 'mes' : 'meses'})` : ''), v]); });
+  const cuando = (() => { const t = num(q._upd); if (!t) return ''; const min2 = Math.round((Date.now() - t) / 60000); return min2 < 1 ? ' · ahora' : min2 < 60 ? ` · hace ${min2} min` : min2 < 600 ? ` · hace ${Math.round(min2 / 60)} h` : ''; })();
+  return `<div class="rp ${malo ? 'mal' : ''}"><div class="rp-h"><span class="rp-l">Recibo anterior</span>${chip}${tg}</div>
+    <div class="rp-big">${esc(recNum(q))}${isTrue(q.nulo) ? ' <span class="rp-chip e">ANULADO</span>' : ''}</div>
+    <div class="muted">${esc(cap(dobj(toYMD(q.fecha)) ? dobj(toYMD(q.fecha)).toLocaleDateString('es-SV', { weekday: 'long' }) : ''))} ${fdate(q.fecha)}${cuando}</div>
+    <div class="rp-nom">${esc(nombre.toUpperCase() || '—')}</div>${grado ? `<div class="muted">${esc(grado)}</div>` : ''}
+    ${filas.length ? `<table class="rp-tb">${filas.slice(0, 5).map(([l, v]) => `<tr><td>${esc(l)}</td><td class="r">${money(v)}</td></tr>`).join('')}${filas.length > 5 ? `<tr><td class="muted">+${filas.length - 5} más</td><td></td></tr>` : ''}<tr class="tt"><td>TOTAL</td><td class="r">${money(q.pago ?? q.total)}</td></tr></table>` : ''}
+    ${malo ? al.map(a => `<div class="rp-al ${a.t}">⚠ ${a.m}</div>`).join('') : (d.n ? `<div class="rp-al g">✔ ${d.n} sigue al anterior · sin saltos</div>` : '')}
+    <div class="rp-bt"><button type="button" class="btn sm" data-rp="ab">✏️ Abrir</button><button type="button" class="btn sm" data-rp="cp" title="Copiar nombre, NIE, grado y sección al recibo nuevo">📋 Copiar datos</button></div></div>`;
+}
 function openRecibo(row, done, pre) {
   const isNew = !row;
   const serie0 = (row && row.serie) || LS.get('lastSerie', CFG.serieDef || 'B');
@@ -152,10 +192,9 @@ function openRecibo(row, done, pre) {
     <div class="wide rec-top">
     <label class="f req"><span>Serie</span><select class="in" id="r_serie">${lista('series').map(o => `<option ${o === row.serie ? 'selected' : ''}>${esc(o)}</option>`).join('')}${lista('series').includes(row.serie) ? '' : `<option selected>${esc(row.serie || '')}</option>`}</select></label>
     <label class="f req"><span>N° de recibo</span><input class="in" type="number" id="r_numero" value="${esc(row.numero)}"></label>
-      <div></div>
+      <div id="r_prev" class="rec-prev"></div>
     <label class="f"><span>Tipo de pagador</span><select class="in" id="r_tipo">${lista('pagador').map(o => `<option ${o === row.tipo ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></label>
     <label class="f"><span>NIE</span><input class="in" id="r_nie" value="${esc(row.nie || '')}"></label>
-      <div></div>
     <label class="f req"><span>Fecha</span><input class="in" type="date" id="r_fecha" value="${esc(toYMD(row.fecha))}"><small id="r_fchk" style="font-size:11.5px;margin-top:3px"></small></label>
     </div>
     <label class="f req wide"><span>Nombre (escriba para buscar en la base de estudiantes)</span><input class="in" id="r_nombre" value="${esc(row.nombre || '')}"></label>
@@ -317,6 +356,22 @@ function openRecibo(row, done, pre) {
   });
   box.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); guardar(true).then(ok => ok && closeModal()); } });
   refresh(); info(); pintaEst(false);
+  /* Resumen del recibo anterior de la serie + alertas de secuencia (se puede minimizar en el mismo lugar) */
+  const pintaPrev = () => {
+    const c = $('#r_prev'); if (!c) return;
+    const d = resumenRecAnterior($('#r_serie').value, num($('#r_numero').value), row._id);
+    const h = htmlRecAnterior(d, LS.get('recPrevMin', false));
+    if (c.dataset.h === h) return; c.dataset.h = h; c.innerHTML = h;
+    const tg = $('[data-rp=tg]', c); if (tg) tg.onmousedown = e => { e.preventDefault(); LS.set('recPrevMin', !LS.get('recPrevMin', false)); c.dataset.h = ''; pintaPrev(); };
+    const ab = $('[data-rp=ab]', c); if (ab && d.prev) ab.onmousedown = e => { e.preventDefault(); closeModal(); setTimeout(() => openRecibo(Store.get('recibos', d.prev._id), done), 60); };
+    const cp = $('[data-rp=cp]', c); if (cp && d.prev) cp.onmousedown = e => {
+      e.preventDefault(); const q = d.prev;
+      $('#r_nombre').value = q.nombre || ''; $('#r_nie').value = q.nie || ''; if (q.tipo) $('#r_tipo').value = q.tipo; row.est_id = q.est_id || '';
+      setSel('#r_grado', q.grado); setSel('#r_seccion', q.seccion); setSel('#r_opcion', q.opcion); pintaEst(false); info(); refresh(); toast('Datos del alumno copiados del recibo anterior', 'ok', 1800);
+    };
+  };
+  $('#r_numero').addEventListener('input', pintaPrev); $('#r_serie').addEventListener('change', () => setTimeout(pintaPrev, 0));
+  pintaPrev();
   const fchk = () => { const f = $('#r_fecha').value, e = $('#r_fchk'); if (!e) return; if (!f) { e.innerHTML = '<b class="bad-t">⚠ Falta la fecha</b>'; return; } const dia = cap(dobj(f).toLocaleDateString('es-SV', { weekday: 'long', day: 'numeric', month: 'long' })); e.innerHTML = f === today() ? `<span class="ok-t">● ${dia} · hoy</span>` : `<b class="warn-t">⚠ ${dia} · NO es la fecha de hoy</b>`; $('#r_fecha').style.outline = f === today() ? '' : '2px solid var(--warn)'; };
   $('#r_fecha').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey) { e.preventDefault(); $('#r_nombre').focus(); } });
   $('#r_fecha').addEventListener('input', fchk); $('#r_fecha').addEventListener('change', fchk); fchk();
