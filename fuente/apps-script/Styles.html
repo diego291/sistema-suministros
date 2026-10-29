@@ -340,12 +340,15 @@ table.t td.act{white-space:nowrap;width:1%}
 .page .pt td{padding:3px 5px;border:1px solid #bfbfbf;font-size:10.5px}
 .page .pt tr.tot td{font-weight:700;background:#ddebf7;-webkit-print-color-adjust:exact;print-color-adjust:exact}
 .page .pt.lined td{height:24px}
-.memb{display:flex;align-items:center;gap:12px;border-bottom:2px solid #1f3864;padding-bottom:6px;margin-bottom:10px}
+.memb{display:flex;align-items:center;gap:12px;border-bottom:2px solid #1f3864;padding-bottom:7px;margin-bottom:0}
 .memb img{height:58px;width:auto}
 .memb .mt{flex:1;text-align:center}
-.memb .mt b{display:block;font-size:13.5px}
+.memb .mt b{display:block;font-size:14px;color:#1f3864;letter-spacing:.2px}
 .memb .mt div{font-size:10.5px}
-.ptitle{text-align:center;font-weight:700;font-size:15px;margin:6px 0 2px;color:#1f3864}
+.memb .mt .msub{margin-top:2px;font-weight:700;color:#1f3864}
+.memb2{border-bottom:1px solid #9bc2e6;margin:2px 0 12px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.pref{display:flex;justify-content:space-between;gap:12px;font-size:11.5px;margin:0 0 14px}
+.ptitle{text-align:center;font-weight:700;font-size:15px;margin:6px 0 2px;color:#1f3864;letter-spacing:.4px}
 .psub{text-align:center;color:#444;font-size:11px;margin-bottom:10px}
 .pkpi{display:flex;border:1px solid #9bc2e6;background:#ddebf7;margin:8px 0;-webkit-print-color-adjust:exact;print-color-adjust:exact}
 .pkpi div{flex:1;text-align:center;padding:5px}
@@ -358,7 +361,7 @@ table.t td.act{white-space:nowrap;width:1%}
 .firmas2>div{flex:1;max-width:240px}
 .firmas2 .fl{text-align:left;margin-bottom:10px;white-space:nowrap;overflow:hidden}
 .firmas2 b{display:block;font-size:11.5px}
-.pfoot{position:absolute;bottom:6mm;left:14mm;right:14mm;font-size:8.5px;color:#777;display:flex;justify-content:space-between}
+.pfoot{position:absolute;bottom:6mm;left:14mm;right:14mm;font-size:8.5px;color:#555;display:flex;justify-content:space-between;gap:10px;border-top:1px solid #1f3864;padding-top:4px}
 .ptxt{font-size:12.5px;line-height:1.7;text-align:justify}
 .ptxt p{margin:0 0 10px}
 .box-line{border-bottom:1px solid #000;display:inline-block;min-width:120px;padding:0 4px}
@@ -376,7 +379,7 @@ table.t td.act{white-space:nowrap;width:1%}
   .page .pt thead{display:table-header-group}
   .page .pt tr{break-inside:avoid}
   .page:last-child{page-break-after:auto;break-after:auto}
-  .pfoot{position:static;margin-top:10px}
+  .pfoot{position:static;margin-top:16px;break-inside:avoid}
 }
 @media (max-width:900px){
   #side{position:fixed;z-index:40;height:100vh}

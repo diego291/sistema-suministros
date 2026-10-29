@@ -734,7 +734,9 @@ defMod({ key: 'plantillas', label: 'Plantillas de documentos', scope: 'g', field
   { k: 'firmas', l: 'Firmas al pie (una por línea: Nombre | Cargo)', t: 'textarea', rows: 3 },
   { k: 'f_alin', l: 'Posición de las firmas', t: 'select', o: () => FIRMA_ALIN, def: 'centro' },
   { k: 'f_esp', l: 'Espacio para firmar', t: 'select', o: () => FIRMA_ESP, def: 'amplio' },
-  { k: 'f_sello', l: 'Recuadro para sello', t: 'select', o: () => FIRMA_SELLO, def: 'no' }],
+  { k: 'f_sello', l: 'Recuadro para sello', t: 'select', o: () => FIRMA_SELLO, def: 'no' },
+  { k: 'f_titulo', l: 'Título del documento (opcional)', t: 'text' },
+  { k: 'f_ref', l: 'Número de referencia arriba', t: 'select', o: () => [{ v: 'si', l: 'Mostrar' }, { v: 'no', l: 'No mostrar' }], def: 'si' }],
   table: ['nombre', 'categoria'], filters: ['categoria'], sort: { k: 'nombre', dir: 1 },
   actions: [{ l: '📝 Usar', fn: r => go('d:generar', { id: r._id }) }], listButtons: [{ l: '📥 Importar carta / formato', fn: (rows, refresh) => importarPlantillas(refresh) }] });
 defMod({ key: 'documentos', label: 'Documentos emitidos', fields: [

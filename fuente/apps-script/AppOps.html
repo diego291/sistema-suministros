@@ -190,7 +190,7 @@ defView('c:recibo', 'Recibo (transporte o sin factura)', (el, p = {}) => {
 const filasMin = (items, min, fn, vacia) => { const r = items.map(fn); for (let i = items.length; i < min; i++) r.push(vacia(i)); return r; };
 function formatoCotizacion(c) {
   const fl = dobj(c.fecha_limite);
-  return `<div class="page"><div class="ptitle" style="font-size:16px;margin-top:20px">SOLICITUD DE COTIZACIÓN</div><br>
+  return `<div class="page">${membrete()}<div class="ptitle" style="font-size:16px;margin-top:6px">SOLICITUD DE COTIZACIÓN</div><div class="psub">${c.numero ? 'Proceso de compra N° ' + esc(c.numero) : '&nbsp;'}</div>
     <p class="ptxt"><b>LUGAR Y FECHA:</b> ${esc(CFG.inst.lugar)}, ${c.fecha_sol ? flong(c.fecha_sol) : '_______________________'}</p>
     <p class="ptxt"><b>SEÑORES:</b> ${esc(c.proveedor || '_________________________________')}</p>
     <p class="ptxt">El suscrito Concejal propietario padre, madre de familia del CDE ${esc(c.cde_txt || '')} del ${esc(CFG.inst.nombre)}, por este medio solicita cotización por escrito del material o servicios abajo detallados, la cual deberá ser enviada a nuestro centro educativo a más tardar el ${fl ? fl.getDate() : '____'} del mes de ${fl ? MESES[fl.getMonth()] : '____________'} del ${fl ? fl.getFullYear() : Store.year}; las cotizaciones que se reciban posteriormente a esta fecha no serán consideradas para decidir la compra.</p>
@@ -201,7 +201,7 @@ function formatoCotizacion(c) {
 }
 function formatoOrden(c) {
   const tot = itemsTotal(c.items);
-  return `<div class="page"><div class="ptitle" style="font-size:16px;margin-top:20px">ORDEN DE COMPRA DE BIENES Y SERVICIOS</div><div style="text-align:right;font-weight:700">No. ${esc(c.n_orden || '_____')}</div>
+  return `<div class="page">${membrete()}<div class="ptitle" style="font-size:16px;margin-top:6px">ORDEN DE COMPRA DE BIENES Y SERVICIOS</div><div style="text-align:right;font-weight:700">No. ${esc(c.n_orden || '_____')}</div>
     <p class="ptxt"><b>${esc(String(CFG.inst.lugar).toUpperCase())}, ${c.fecha_orden ? flong(c.fecha_orden).toUpperCase() : '_______________________'}</b></p>
     <p class="ptxt">Señores: <b>${esc(c.proveedor || '')}</b>${c.proveedor_com ? ' (' + esc(c.proveedor_com) + ')' : ''}<br>Atentamente le solicito entregar en: <b>${esc(CFG.inst.nombre)}</b> los suministros que se detallan a continuación:</p>
     ${ptable([{ l: 'CANTIDAD', w: '62px' }, { l: 'UNIDAD DE MEDIDA', w: '90px' }, 'DESCRIPCIÓN', { l: 'PRECIO UNITARIO $', w: '80px' }, { l: 'PRECIO TOTAL', w: '80px' }], filasMin(c.items || [], 10, it => `<tr><td class="c">${nfmt(it.cant)}</td><td class="c">${esc(it.unidad)}</td><td>${esc(it.desc)}</td><td class="r">${money(it.precio)}</td><td class="r">${money(num(it.cant) * num(it.precio))}</td></tr>`, () => '<tr><td></td><td></td><td></td><td></td><td></td></tr>'), { cls: 'lined', foot: `<tr class="tot"><td colspan="4" class="r">TOTAL</td><td class="r">${tot ? money(tot) : ''}</td></tr>` })}
@@ -213,7 +213,7 @@ function formatoOrden(c) {
 }
 function formatoActa(c) {
   const tot = itemsTotal(c.items); const i = CFG.inst;
-  return `<div class="page"><div class="ptitle" style="font-size:16px;margin-top:20px">ACTA DE RECEPCIÓN DE BIENES Y SERVICIOS</div><div style="text-align:right;font-weight:700">N° ${esc(c.n_acta || '________')}</div>
+  return `<div class="page">${membrete()}<div class="ptitle" style="font-size:16px;margin-top:6px">ACTA DE RECEPCIÓN DE BIENES Y SERVICIOS</div><div style="text-align:right;font-weight:700">N° ${esc(c.n_acta || '________')}</div>
     <p class="ptxt" style="line-height:1.6"><b>NOMBRE DEL ORGANISMO:</b> CDE ${esc(i.nombre)}<br><b>CÓDIGO INFRA:</b> ${esc(i.codigo)} &nbsp;&nbsp;&nbsp; <b>DEPARTAMENTO:</b> ${esc(i.departamento)}<br><b>MUNICIPIO:</b> ${esc(i.municipio)}<br><b>DISTRITO:</b> ${esc(i.distrito)}<br><b>FECHA:</b> ${c.fecha_rec ? flong(c.fecha_rec).toUpperCase() : '________________________'}</p>
     <p class="ptxt"><b>NOMBRE DEL CENTRO EDUCATIVO:</b> ${esc(i.nombre)}, EL (LA) SUSCRITO (A) HACE CONSTAR QUE HE RECIBIDO DE ACUERDO A LO CONVENIDO CON: <b>${esc(c.proveedor || '_____________________')}</b> LOS BIENES Y SERVICIOS QUE SE DETALLAN A CONTINUACIÓN.</p>
     ${ptable(['DESCRIPCIÓN O CONCEPTO', { l: 'UNIDAD DE MEDIDA', w: '80px' }, { l: 'CANTIDAD RECIBIDA', w: '70px' }, { l: 'PRECIO UNITARIO $', w: '75px' }, { l: 'VALOR TOTAL $', w: '75px' }], filasMin(c.items || [], 10, it => `<tr><td>${esc(it.desc)}</td><td class="c">${esc(it.unidad)}</td><td class="c">${nfmt(it.cant)}</td><td class="r">${money(it.precio)}</td><td class="r">${money(num(it.cant) * num(it.precio))}</td></tr>`, () => '<tr><td></td><td></td><td></td><td></td><td></td></tr>'), { cls: 'lined', foot: `<tr class="tot"><td colspan="4">TOTAL EN LETRAS: ${tot ? numLetras(tot) : '______________________________'}</td><td class="r">${tot ? money(tot) : ''}</td></tr>` })}
@@ -591,13 +591,16 @@ defView('d:generar', 'Generar documento', (el, p) => {
   const auto = () => Object.assign({ fecha_larga: flong(datos.fecha || today()), lugar: CFG.inst.lugar, institucion: CFG.inst.nombre, organismo: CFG.inst.organismo, anio: Store.year }, Object.fromEntries(firmantes().map(f => [f.k, f.nombre])), Object.fromEntries(firmantes().map(f => ['cargo_' + f.k, f.cargo])));
   const vars = () => { const s = (pl ? pl.contenido + '\n' + (pl.firmas || '') : ''); return [...new Set([...s.matchAll(/\{\{\s*([\w_]+)\s*\}\}/g)].map(m => m[1]))]; };
   const fill = s => String(s || '').replace(/\{\{\s*([\w_]+)\s*\}\}/g, (m, k) => { const a = auto(); const v = datos[k] !== undefined && datos[k] !== '' ? datos[k] : a[k]; return v !== undefined && v !== '' ? v : '________'; });
-  const diseno = () => ({ alin: datos._alin || pl.f_alin || 'centro', esp: datos._esp || pl.f_esp || 'amplio', sello: datos._sello || pl.f_sello || 'no' });
+  const diseno = () => ({ alin: datos._alin || pl.f_alin || 'centro', esp: datos._esp || pl.f_esp || 'amplio', sello: datos._sello || pl.f_sello || 'no', ref: datos._ref || pl.f_ref || 'si', titulo: datos._titulo !== undefined ? datos._titulo : (pl.f_titulo || '') });
+  const numDoc = () => doc ? doc.numero : `${Store.year}-${String(Store.all('documentos').length + 1).padStart(3, '0')}`;
   const sel = (k, arr, v) => `<select class="in" data-d="${k}">${arr.map(o => `<option value="${o.v}" ${o.v === v ? 'selected' : ''}>${esc(o.l)}</option>`).join('')}</select>`;
   const html = () => {
     const body = fill(pl.contenido).split(/\n{2,}/).map(par => `<p>${esc(par).replace(/\n/g, '<br>')}</p>`).join('');
     const fs = String(pl.firmas || '').split('\n').map(l => l.split('|').map(x => fill(x.trim()))).filter(x => x[0] || x[1]);
     const op = diseno();
-    return `<div class="page">${membrete()}<div class="ptxt" style="margin-top:20px">${body}</div>${fs.length || op.sello !== 'no' ? bloqueFirmas(fs.map(([n, c]) => [n === '________' ? '' : n, c || '']), op) : ''}</div>`;
+    const fechaArriba = !/\{\{\s*fecha_larga\s*\}\}/.test(pl.contenido) ? `${CFG.inst.lugar || ''}${CFG.inst.lugar ? ', ' : ''}${flong(datos.fecha || today())}` : '';
+    const cab = (op.ref === 'si' ? pref(numDoc(), fechaArriba) : (fechaArriba ? pref('', fechaArriba) : '')) + (op.titulo ? `<div class="ptitle" style="margin:4px 0 14px">${esc(fill(op.titulo).toUpperCase())}</div>` : '');
+    return `<div class="page">${membrete()}${cab}<div class="ptxt" style="margin-top:${cab ? 4 : 20}px">${body}</div>${fs.length || op.sello !== 'no' ? bloqueFirmas(fs.map(([n, c]) => [n === '________' ? '' : n, c || '']), op) : ''}</div>`;
   };
   const draw = () => {
     const ps = Store.all('plantillas').sort((a, b) => String(a.nombre).localeCompare(b.nombre));
@@ -607,8 +610,8 @@ defView('d:generar', 'Generar documento', (el, p) => {
       <div class="form"><label class="f"><span>Fecha del documento</span><input class="in" type="date" data-v="fecha" value="${esc(datos.fecha || today())}"></label>
       ${vars().filter(v => !(v in a)).map(v => `<label class="f ${/cuerpo|detalle/.test(v) ? 'wide' : ''}"><span>${esc(cap(v.replace(/_/g, ' ')))}</span>${/cuerpo|detalle/.test(v) ? `<textarea class="in" rows="4" data-v="${v}">${esc(datos[v] || '')}</textarea>` : `<input class="in" data-v="${v}" value="${esc(datos[v] || '')}">`}</label>`).join('')}</div>
       ${vars().some(v => v in a && v !== 'fecha_larga') ? `<details style="margin-top:10px"><summary class="muted" style="cursor:pointer">Datos automáticos (institución, firmantes…) · cambiar solo para este documento</summary><div class="form" style="margin-top:8px">${vars().filter(v => v in a && v !== 'fecha_larga').map(v => `<label class="f"><span>${esc(cap(v.replace(/_/g, ' ')))}</span><input class="in" data-v="${v}" value="${esc(datos[v] || '')}" placeholder="${esc(a[v] || '')}"></label>`).join('')}</div></details>` : ''}
-      <div style="margin-top:12px;padding:10px;border:1px solid var(--ln);border-radius:var(--r)"><b style="font-size:13px">✍️ Firmas y sello</b>
-        <div class="form" style="margin-top:6px"><label class="f"><span>Posición de las firmas</span>${sel('_alin', FIRMA_ALIN, diseno().alin)}</label><label class="f"><span>Espacio para firmar</span>${sel('_esp', FIRMA_ESP, diseno().esp)}</label><label class="f"><span>Recuadro para sello</span>${sel('_sello', FIRMA_SELLO, diseno().sello)}</label></div>
+      <div style="margin-top:12px;padding:10px;border:1px solid var(--ln);border-radius:var(--r)"><b style="font-size:13px">✍️ Formato, firmas y sello</b>
+        <div class="form" style="margin-top:6px"><label class="f"><span>Título del documento (opcional)</span><input class="in" data-d="_titulo" value="${esc(diseno().titulo)}" placeholder="Ej.: Solicitud de autorización de compra"></label><label class="f"><span>Número de referencia arriba</span>${sel('_ref', [{ v: 'si', l: 'Mostrar (Ref.: ' + numDoc() + ')' }, { v: 'no', l: 'No mostrar' }], diseno().ref)}</label><label class="f"><span>Posición de las firmas</span>${sel('_alin', FIRMA_ALIN, diseno().alin)}</label><label class="f"><span>Espacio para firmar</span>${sel('_esp', FIRMA_ESP, diseno().esp)}</label><label class="f"><span>Recuadro para sello</span>${sel('_sello', FIRMA_SELLO, diseno().sello)}</label></div>
         <div class="bar" style="margin-top:6px"><span class="muted" style="font-size:12px">Aplica a este documento.</span><span class="sp"></span><button class="btn sm" id="dDf">Guardar como predeterminado de la plantilla</button></div></div>
       <div class="bar" style="margin-top:12px"><span class="sp"></span><button class="btn" id="dS">💾 Guardar en emitidos</button><button class="btn pri" id="dPr">🖨️ Imprimir</button></div></div>
       <div class="pv-mini" id="dPrev"></div></div>`;
@@ -618,11 +621,11 @@ defView('d:generar', 'Generar documento', (el, p) => {
     $('#dNw', el).onclick = () => openForm('plantillas', null, { onDone: s => { if (s) pl = Store.get('plantillas', s._id); draw(); } });
     $('#dIm', el).onclick = () => importarPlantillas(() => { const ps = Store.all('plantillas').sort((a, b) => num(b._upd) - num(a._upd)); if (ps[0]) pl = ps[0]; draw(); });
     $$('[data-v]', el).forEach(i => i.oninput = () => { datos[i.dataset.v] = i.value; $('#dPrev', el).innerHTML = html(); });
-    $$('[data-d]', el).forEach(i => i.onchange = () => { datos[i.dataset.d] = i.value; $('#dPrev', el).innerHTML = html(); });
-    $('#dDf', el).onclick = async () => { const d = diseno(); await Store.save('plantillas', Object.assign({}, pl, { f_alin: d.alin, f_esp: d.esp, f_sello: d.sello })); pl = Store.get('plantillas', pl._id); toast('Diseño de firmas guardado en la plantilla “' + pl.nombre + '” ✔', 'ok'); };
+    $$('[data-d]', el).forEach(i => i.onchange = i.oninput = () => { datos[i.dataset.d] = i.value; $('#dPrev', el).innerHTML = html(); });
+    $('#dDf', el).onclick = async () => { const d = diseno(); await Store.save('plantillas', Object.assign({}, pl, { f_alin: d.alin, f_esp: d.esp, f_sello: d.sello, f_ref: d.ref, f_titulo: d.titulo })); pl = Store.get('plantillas', pl._id); toast('Formato y firmas guardados en la plantilla “' + pl.nombre + '” ✔', 'ok'); };
     $('#dPr', el).onclick = () => Print.show(pl.nombre, html());
     $('#dS', el).onclick = async () => {
-      const n = doc ? doc.numero : `${Store.year}-${String(Store.all('documentos').length + 1).padStart(3, '0')}`;
+      const n = numDoc();
       const r = await Store.save('documentos', Object.assign({}, doc || {}, { fecha: datos.fecha || today(), numero: n, plantilla: pl.nombre, destinatario: datos.destinatario || datos.nombre || '', asunto: datos.concepto || datos.asunto || pl.nombre, contenido: fill(pl.contenido), datos: JSON.stringify(datos) }));
       toast('Documento guardado como ' + r.numero, 'ok');
     };

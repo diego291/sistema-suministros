@@ -856,6 +856,7 @@ const Print = {
   show(title, pagesHtml) {
     this.title = title;
     $('#pvTitle').textContent = title; $('#printRoot').innerHTML = pagesHtml;
+    $$('#printRoot .page').forEach(pg => { if ($('.memb', pg) && !$('.pfoot', pg)) pg.insertAdjacentHTML('beforeend', pfoot()); });
     $('#printView').classList.add('on'); $('#printView').scrollTop = 0;
     const pt = $('#printRoot .ptitle');
     this.key = 'pcols_' + norm(pt ? pt.textContent.replace(/\d+/g, '') : title).replace(/ /g, '_').slice(0, 60);
@@ -900,8 +901,10 @@ const Print = {
 };
 function membrete(sub) {
   const i = CFG.inst;
-  return `<div class="memb">${i.logo ? `<img src="${esc(i.logo)}">` : ''}<div class="mt"><b>${esc(i.nombre)}</b><div>${esc(i.organismo)}${i.area ? ' — ' + esc(i.area) : ''}</div><div>${esc(i.direccion)}${i.telefono ? ' · Tel. ' + esc(i.telefono) : ''}</div>${sub ? `<div><b>${esc(sub)}</b></div>` : ''}</div>${i.logo ? '<div style="width:58px"></div>' : ''}</div>`;
+  return `<div class="memb">${i.logo ? `<img src="${esc(i.logo)}">` : ''}<div class="mt"><b>${esc(i.nombre)}</b><div>${esc(i.organismo)}${i.area ? ' — ' + esc(i.area) : ''}</div><div>${esc(i.direccion)}${i.telefono ? ' · Tel. ' + esc(i.telefono) : ''}</div>${sub ? `<div class="msub">${esc(sub)}</div>` : ''}</div>${i.logo ? '<div style="width:58px"></div>' : ''}</div><div class="memb2"></div>`;
 }
+/** Línea de referencia de documentos: Ref. a la izquierda, lugar y fecha a la derecha */
+const pref = (ref, fecha) => (ref || fecha) ? `<div class="pref"><span>${ref ? `<b>Ref.:</b> ${esc(ref)}` : ''}</span><span>${fecha ? esc(fecha) : ''}</span></div>` : '';
 const firmas = arr => `<div class="firmas">${arr.map(([n, c]) => `<div>${n ? esc(n) + '<br>' : ''}<b>${esc(c)}</b></div>`).join('')}</div>`;
 /* ---------- Firmantes configurables ---------- */
 const DOCS_FIRMA = [
@@ -934,7 +937,7 @@ function firmasDoc(doc, extra) {
   if (!items.length) return '';
   return `<div class="firmas2">${items.map(([n, c]) => `<div><div class="fl">F. ____________________________</div>${n ? `<b>${esc(n)}</b>` : '<b>&nbsp;</b>'}<div>${esc(c || '')}</div></div>`).join('')}</div>`;
 }
-const pfoot = txt => `<div class="pfoot"><span>${esc(txt || '')}</span><span>Generado: ${fdate(today())} ${new Date().toTimeString().slice(0, 5)}</span></div>`;
+const pfoot = txt => `<div class="pfoot"><span>${esc(txt || [CFG.inst.nombre, CFG.inst.area].filter(Boolean).join(' · '))}</span><span>Generado: ${fdate(today())} ${new Date().toTimeString().slice(0, 5)}</span></div>`;
 function ptable(head, rows, opts = {}) {
   return `<table class="pt ${opts.cls || ''}"><thead><tr>${head.map(h => `<th${h.w ? ` style="width:${h.w}"` : ''}>${esc(h.l ?? h)}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody>${opts.foot ? `<tfoot>${opts.foot}</tfoot>` : ''}</table>`;
 }
