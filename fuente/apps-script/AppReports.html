@@ -542,48 +542,77 @@ function vistaArqueo(el, p) {
   const prev = p.id ? Store.get('arqueos', p.id) : null;
   let caja = prev ? prev.caja : (p.caja || 'GENERAL');
   let cnt = {}; try { cnt = prev && prev.conteo ? JSON.parse(prev.conteo) : {}; } catch (e) { }
+  let exprs = Object.assign({}, cnt._expr || {}); delete cnt._expr;
   let manual = prev ? num(prev.esperado) : null;
   let notas = prev ? prev.notas || '' : '', fecha = prev ? prev.fecha : today();
   const ultimo = c => Store.all('arqueos').filter(a => a.caja === c).sort((a, b) => String(b.fecha).localeCompare(a.fecha) || num(b._upd) - num(a._upd))[0];
   const esperadoAuto = () => caja === 'CAJA CHICA' ? prepCaja(Store.all('cajachica')).saldo : totalesIngreso('', '').esperado;
   const vista = (extra) => go(caja === 'CAJA CHICA' ? 'c:arqueo' : 't:arqueo', Object.assign({ caja }, extra || {}));
+  const evalCant = t => { const x = String(t || '').trim(); if (!x) return 0; const v = typeof calcEval === 'function' ? calcEval(x) : num(x); return v === null ? NaN : v; };
+  const esOp = t => /[+\-*x×\/]/i.test(String(t || '').replace(/^\s*-/, ''));
+  const contado = () => r2(DENOM.reduce((a, [l, v]) => a + num(cnt[l]) * v, 0));
+  const esp = () => manual !== null ? manual : esperadoAuto();
+  const resultado = () => { const d = r2(contado() - esp()); return { d, txt: Math.abs(d) < 0.01 ? '✔ CUADRA' : d < 0 ? 'FALTANTE de ' + money(-d) : 'SOBRANTE de ' + money(d) }; };
+  const fila = (l, v, cls) => { const e = exprs[l] ?? (cnt[l] ? String(cnt[l]) : ''); return `<tr data-row="${esc(l)}"><td style="width:84px"><span class="aq-d ${cls}">${esc(l.replace(/^(Billete|Moneda) /, ''))}</span></td><td><input class="in aq-in" inputmode="decimal" autocomplete="off" data-d="${esc(l)}" value="${esc(e)}"></td><td class="aq-eq">${esOp(e) && !isNaN(evalCant(e)) ? '= ' + nfmt(evalCant(e)) : ''}</td><td class="num aq-sub">${num(cnt[l]) ? money(num(cnt[l]) * v) : '<span class="muted">—</span>'}</td></tr>`; };
+  const BIL = DENOM.filter(([l]) => /^Billete/.test(l)), MON = DENOM.filter(([l]) => !/^Billete/.test(l));
+  const subt = arr => r2(arr.reduce((a, [l, v]) => a + num(cnt[l]) * v, 0));
+  const pintaRes = () => {
+    const r = resultado(), ok = Math.abs(r.d) < 0.01;
+    $('#aqC', el).textContent = money(contado());
+    $('#aqDif', el).className = 'aq-k ' + (ok ? 'ok' : 'bad'); $('#aqDifV', el).innerHTML = `${money(r.d)} · ${esc(r.txt.replace(/ de .*/, ''))}`;
+    $('#aqB', el).textContent = money(subt(BIL)); $('#aqM', el).textContent = money(subt(MON));
+    $('#aqMan', el).style.display = manual !== null ? '' : 'none';
+  };
   const draw = () => {
-    const contado = r2(DENOM.reduce((s, [l, v]) => s + num(cnt[l]) * v, 0));
-    const esp = manual !== null ? manual : esperadoAuto();
-    const dif = r2(contado - esp); const res = Math.abs(dif) < 0.01 ? '✔ CUADRA' : dif < 0 ? 'FALTANTE de ' + money(-dif) : 'SOBRANTE de ' + money(dif);
     const ult = ultimo(caja);
     el.innerHTML = `<div class="bar"><div class="chips">${['GENERAL', 'CAJA CHICA'].map(c => `<span class="chip ${c === caja ? 'on' : ''}" data-c="${c}">${c === 'GENERAL' ? 'Caja general (ingresos)' : 'Caja chica'}</span>`).join('')}</div><span class="sp"></span>
       <label class="f"><span>Fecha</span><input type="date" class="in" id="aF" value="${fecha}"></label></div>
     ${prev ? `<div class="alert info">📂 Está viendo el arqueo guardado del <b>${fdate(prev.fecha)}</b> (${esc(prev.resultado || '')}). Puede corregirlo y <b>guardar cambios</b>, o usarlo de base y <b>guardar como arqueo nuevo</b>. <button class="btn sm" id="aNw" style="margin-left:8px">+ Empezar arqueo nuevo</button></div>`
       : ult ? `<div class="alert info">Último arqueo de esta caja: <b>${fdate(ult.fecha)}</b> · contado ${money(ult.contado)} · ${esc(ult.resultado || '')}.</div>` : ''}
-    <div class="grid g2"><div class="card"><h3 style="display:flex;align-items:center;gap:8px">Conteo de efectivo<span class="sp"></span><button class="btn sm" id="aU" ${ult ? '' : 'disabled'} title="Cargar las cantidades del último arqueo guardado">📂 Traer último arqueo</button><button class="btn sm" id="aL" title="Borrar las cantidades escritas">🧹 Limpiar</button></h3><table class="t denom"><thead><tr><th>Denominación</th><th class="r">Cantidad</th><th class="r">Subtotal</th></tr></thead><tbody>
-      ${DENOM.map(([l, v]) => `<tr><td>${l}</td><td class="r"><input class="in" type="number" min="0" data-d="${l}" value="${cnt[l] || ''}"></td><td class="num">${money(num(cnt[l]) * v)}</td></tr>`).join('')}</tbody>
-      <tfoot><tr><td>EFECTIVO CONTADO</td><td></td><td class="num">${money(contado)}</td></tr></tfoot></table></div>
-    <div class="card"><h3>Resultado</h3><table class="t"><tbody>
-      ${caja === 'CAJA CHICA' ? `<tr><td>Fondo asignado</td><td class="num">${money(CFG.caja.fondo)}</td></tr><tr><td>Gastos documentados en caja actual</td><td class="num">${money(num(CFG.caja.fondo) - esperadoAuto())}</td></tr>` : `<tr><td colspan="2" class="muted" style="font-size:12px">Esperado = cobrado según rubros (sin los pagados en banco) ${CFG.cuadre.incluirDonaciones ? '+ donaciones ' : ''}− depósitos − no remesado − devoluciones (año ${Store.year}). Registre los depósitos que haga después de contar: el cuadre los descuenta del efectivo contado.</td></tr>`}
-      <tr><td>Efectivo que debe haber ${manual !== null ? '<span class="tag warn">manual</span>' : ''}</td><td class="r"><input class="in num" type="number" step="any" id="aE" value="${esp}" style="width:130px"></td></tr>
-      <tr><td>Efectivo contado</td><td class="num">${money(contado)}</td></tr>
-      <tr><td><b>DIFERENCIA (contado − debe haber)</b></td><td class="num ${Math.abs(dif) < .01 ? 'ok-t' : 'bad-t'}"><b>${money(dif)}</b></td></tr></tbody></table>
-      <div class="alert ${Math.abs(dif) < .01 ? 'ok' : 'bad'}" style="margin-top:12px;font-size:16px;font-weight:700;text-align:center">${res}</div>
-      <label class="f"><span>Notas / explicación de diferencias</span><textarea class="in" id="aN" rows="4">${esc(notas)}</textarea></label>
-      <div class="bar" style="margin-top:10px"><button class="btn" id="aR">↺ Esperado automático</button><span class="sp"></span><button class="btn" id="aP">🖨️ Imprimir</button>${prev ? '<button class="btn" id="aSn">💾 Guardar como arqueo nuevo</button><button class="btn pri" id="aS">💾 Guardar cambios</button>' : '<button class="btn pri" id="aS">💾 Guardar arqueo</button>'}</div></div></div>`;
+    <div class="card aq-top"><div class="aq-res">
+      <div class="aq-k"><small>Efectivo contado</small><b id="aqC"></b></div>
+      <div class="aq-k"><small>Debe haber <span class="tag warn" id="aqMan">manual</span></small><div style="display:flex;gap:6px;align-items:center"><input class="in num" type="number" step="any" id="aE" value="${r2(esp()).toFixed(2)}" title="Puede corregirlo a mano"><button class="btn sm" id="aR" title="Volver al cálculo automático">↺</button></div></div>
+      <div class="aq-k" id="aqDif"><small>Diferencia</small><b id="aqDifV"></b></div>
+      <div class="aq-act">${prev ? '<button class="btn pri" id="aS">💾 Guardar cambios</button><button class="btn" id="aSn">💾 Guardar como nuevo</button>' : '<button class="btn pri" id="aS">💾 Guardar arqueo</button>'}<button class="btn" id="aP">🖨️ Imprimir</button></div></div>
+      ${caja === 'CAJA CHICA' ? `<div class="muted aq-nota">Fondo asignado ${money(CFG.caja.fondo)} − gastos documentados en la caja actual ${money(num(CFG.caja.fondo) - esperadoAuto())}.</div>` : `<div class="muted aq-nota">Debe haber = cobrado según rubros (sin los pagados en banco)${CFG.cuadre.incluirDonaciones ? ' + donaciones' : ''} − depósitos − no remesado − devoluciones (año ${Store.year}). Registre los depósitos que haga después de contar.</div>`}</div>
+    <div class="grid g2">
+      <div class="card"><h3 style="display:flex;align-items:center">💵 Billetes<span class="muted" id="aqB" style="font-size:13px;margin-left:auto"></span></h3><table class="t aq-t"><tbody>${BIL.map(([l, v]) => fila(l, v, 'bil')).join('')}</tbody></table></div>
+      <div class="card"><h3 style="display:flex;align-items:center">🪙 Monedas<span class="muted" id="aqM" style="font-size:13px;margin-left:auto"></span></h3><table class="t aq-t"><tbody>${MON.map(([l, v]) => fila(l, v, 'mon')).join('')}</tbody></table>
+        <p class="muted" style="font-size:12px;margin:8px 0 0">Puede escribir operaciones: <b>40+40+40+40-5</b> · <b>4x40-5</b>. <b>Enter</b> = siguiente.</p></div></div>
+    <div class="card" style="margin-top:12px"><div class="bar" style="margin:0;align-items:flex-start"><button class="btn" id="aU" ${ult ? '' : 'disabled'} title="Cargar las cantidades del último arqueo guardado">📂 Traer último</button><button class="btn" id="aL" title="Borrar las cantidades escritas">🧹 Limpiar</button>
+      <label class="f" style="flex:1;margin:0"><span>Notas / explicación de diferencias</span><textarea class="in" id="aN" rows="2">${esc(notas)}</textarea></label></div></div>`;
+    pintaRes();
     $$('[data-c]', el).forEach(c => c.onclick = () => { if (prev) { caja = c.dataset.c; vista(); return; } caja = c.dataset.c; manual = null; draw(); });
-    $$('[data-d]', el).forEach(i => i.onchange = () => { cnt[i.dataset.d] = num(i.value); draw(); const nx = $(`[data-d="${i.dataset.d}"]`, el).closest('tr').nextElementSibling; if (nx) $('input', nx).focus(); });
-    $('#aE', el).onchange = e => { manual = num(e.target.value); draw(); };
-    $('#aR', el).onclick = () => { manual = null; draw(); };
+    const ins = $$('[data-d]', el);
+    ins.forEach((i, k) => {
+      i.oninput = () => {
+        const l = i.dataset.d, v = evalCant(i.value), tr = i.closest('tr'), val = (DENOM.find(d => d[0] === l) || [])[1];
+        exprs[l] = i.value; i.classList.toggle('bad', isNaN(v));
+        cnt[l] = isNaN(v) ? 0 : v;
+        $('.aq-eq', tr).textContent = esOp(i.value) && !isNaN(v) ? '= ' + nfmt(v) : isNaN(v) ? '¿?' : '';
+        $('.aq-sub', tr).innerHTML = num(cnt[l]) ? money(num(cnt[l]) * val) : '<span class="muted">—</span>';
+        pintaRes();
+      };
+      i.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); const nx = ins[k + 1]; if (nx) { nx.focus(); nx.select(); } else $('#aN', el).focus(); } };
+      i.onfocus = () => i.select();
+    });
+    $('#aE', el).onchange = e => { manual = num(e.target.value); pintaRes(); };
+    $('#aR', el).onclick = () => { manual = null; $('#aE', el).value = r2(esp()).toFixed(2); pintaRes(); };
     $('#aN', el).oninput = e => { notas = e.target.value; };
     $('#aF', el).onchange = e => { fecha = e.target.value; };
-    $('#aL', el).onclick = async () => { if (Object.values(cnt).some(Boolean) && !(await confirmBox('¿Borrar todas las cantidades escritas en el conteo?', 'Limpiar'))) return; cnt = {}; draw(); const f = $('[data-d]', el); f && f.focus(); };
-    $('#aU', el).onclick = () => { const u = ultimo(caja); if (!u) return; let c = {}; try { c = JSON.parse(u.conteo || '{}'); } catch (e) { } cnt = c; notas = notas || ''; draw(); toast(`Se cargaron las cantidades del arqueo del ${fdate(u.fecha)} (${money(u.contado)})`, 'ok'); };
+    $('#aL', el).onclick = async () => { if (Object.values(cnt).some(Boolean) && !(await confirmBox('¿Borrar todas las cantidades escritas en el conteo?', 'Limpiar'))) return; cnt = {}; exprs = {}; draw(); const f = $('[data-d]', el); f && f.focus(); };
+    $('#aU', el).onclick = () => { const u = ultimo(caja); if (!u) return; let c = {}; try { c = JSON.parse(u.conteo || '{}'); } catch (e) { } exprs = Object.assign({}, c._expr || {}); delete c._expr; cnt = c; draw(); toast(`Se cargaron las cantidades del arqueo del ${fdate(u.fecha)} (${money(u.contado)})`, 'ok'); };
     const nw = $('#aNw', el); if (nw) nw.onclick = () => vista();
-    const rec = (nuevo) => ({ _id: prev && !nuevo ? prev._id : undefined, fecha: $('#aF', el).value, caja, contado, esperado: esp, diferencia: dif, resultado: res, conteo: JSON.stringify(cnt), notas: $('#aN', el).value, snap: caja === 'GENERAL' ? (prev && !nuevo && prev.snap ? prev.snap : snapCaja()) : '' });
-    const guardar = async nuevo => { if (!contado && !(await confirmBox('El conteo está en $0.00. ¿Guardar el arqueo así?', 'Guardar'))) return; const r = await Store.save('arqueos', rec(nuevo)); toast('Arqueo guardado ✔', 'ok'); go(caja === 'CAJA CHICA' ? 'c:arqueo' : 't:arqueo', { caja, id: r._id }); };
+    const rec = (nuevo) => { const r = resultado(); const ex = {}; DENOM.forEach(([l]) => { if (exprs[l] && esOp(exprs[l])) ex[l] = exprs[l]; });
+      return { _id: prev && !nuevo ? prev._id : undefined, fecha: $('#aF', el).value, caja, contado: contado(), esperado: esp(), diferencia: r.d, resultado: r.txt, conteo: JSON.stringify(Object.assign({}, cnt, Object.keys(ex).length ? { _expr: ex } : {})), notas: $('#aN', el).value, snap: caja === 'GENERAL' ? (prev && !nuevo && prev.snap ? prev.snap : snapCaja()) : '' }; };
+    const guardar = async nuevo => { if ($$('[data-d].bad', el).length) return toast('Hay una cantidad con una operación inválida (marcada en rojo)', 'bad'); if (!contado() && !(await confirmBox('El conteo está en $0.00. ¿Guardar el arqueo así?', 'Guardar'))) return; const r = await Store.save('arqueos', rec(nuevo)); toast('Arqueo guardado ✔', 'ok'); go(caja === 'CAJA CHICA' ? 'c:arqueo' : 't:arqueo', { caja, id: r._id }); };
     $('#aS', el).onclick = () => guardar(false);
     const sn = $('#aSn', el); if (sn) sn.onclick = () => guardar(true);
-    $('#aP', el).onclick = () => { const r = rec(); Print.show('Arqueo de ' + caja.toLowerCase(), `<div class="page">${membrete()}<div class="ptitle">ARQUEO DE ${caja === 'GENERAL' ? 'CAJA GENERAL' : 'CAJA CHICA'}</div><div class="psub">Fecha del arqueo: ${flong(r.fecha)}</div>
-      <div style="display:flex;gap:20px"><div style="flex:1">${ptable(['Denominación', 'Cantidad', 'Subtotal'], DENOM.map(([l, v]) => `<tr><td>${l}</td><td class="c">${num(cnt[l]) || ''}</td><td class="r">${money(num(cnt[l]) * v)}</td></tr>`), { foot: `<tr class="tot"><td colspan="2">EFECTIVO CONTADO</td><td class="r">${money(contado)}</td></tr>` })}</div>
-      <div style="flex:1">${ptable(['Concepto', 'Monto'], [['Efectivo que debe haber', esp], ['Efectivo contado', contado], ['Diferencia', dif]].map(([a, b]) => `<tr><td>${a}</td><td class="r">${money(b)}</td></tr>`))}<p style="font-size:14px;font-weight:700;text-align:center;border:2px solid #1f3864;padding:6px">${esc(res)}</p>${r.notas ? `<p><b>Notas:</b> ${esc(r.notas)}</p>` : ''}</div></div>
+    $('#aP', el).onclick = () => { const r = rec(); const e2 = esp(), c2 = contado(); Print.show('Arqueo de ' + caja.toLowerCase(), `<div class="page">${membrete()}<div class="ptitle">ARQUEO DE ${caja === 'GENERAL' ? 'CAJA GENERAL' : 'CAJA CHICA'}</div><div class="psub">Fecha del arqueo: ${flong(r.fecha)}</div>
+      <div style="display:flex;gap:20px"><div style="flex:1">${ptable(['Denominación', 'Cantidad', 'Subtotal'], DENOM.map(([l, v]) => `<tr><td>${l}</td><td class="c">${num(cnt[l]) || ''}</td><td class="r">${money(num(cnt[l]) * v)}</td></tr>`), { foot: `<tr class="tot"><td colspan="2">EFECTIVO CONTADO</td><td class="r">${money(c2)}</td></tr>` })}</div>
+      <div style="flex:1">${ptable(['Concepto', 'Monto'], [['Efectivo que debe haber', e2], ['Efectivo contado', c2], ['Diferencia', r.diferencia]].map(([a, b]) => `<tr><td>${a}</td><td class="r">${money(b)}</td></tr>`))}<p style="font-size:14px;font-weight:700;text-align:center;border:2px solid #1f3864;padding:6px">${esc(r.resultado)}</p>${r.notas ? `<p><b>Notas:</b> ${esc(r.notas)}</p>` : ''}</div></div>
       ${firmasDoc('arqueo')}</div>`); };
+    if (!prev) setTimeout(() => { const f = $('[data-d]', el); if (f && !Object.values(cnt).some(Boolean)) f.focus(); }, 50);
   };
   draw();
 }
