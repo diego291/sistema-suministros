@@ -38,6 +38,23 @@ defMod({
 /* Todos los rubros cuentan en cálculos (aunque estén ocultos); "off" solo los oculta al digitar recibos */
 /* Limpieza: quita rubros agregados automáticamente por una versión anterior (marcados "recuperado") */
 let _limpRub = false;
+/** Rubros con montos en recibos que no están en el catálogo (p. ej. se eliminaron): sus montos no suman */
+const RUBRO_NOMBRES = { teatro: 'Evento de teatro' };
+let _huerf = { n: -1, m: new Map() };
+function rubrosHuerfanos() {
+  const rs = Store.all('recibos'), n = rs.length + ':' + CFG.rubros.length; if (_huerf.n === n) return _huerf.m;
+  const ks = new Set(CFG.rubros.map(r => r.k)), m = new Map();
+  rs.forEach(r => { if (isTrue(r.nulo)) return; for (const k in r) if (k.startsWith('r_') && num(r[k]) && !ks.has(k.slice(2))) { const kk = k.slice(2); const x = m.get(kk) || { k: kk, l: RUBRO_NOMBRES[kk] || cap(kk.replace(/_/g, ' ')), monto: 0, n: 0 }; x.monto = r2(x.monto + num(r[k])); x.n++; m.set(kk, x); } });
+  _huerf = { n, m }; return m;
+}
+function avisoHuerfanos(done) {
+  const m = rubrosHuerfanos(); if (!m.size) return '';
+  const xs = [...m.values()];
+  setTimeout(() => { const b = $('#btnHuerf'); if (b) b.onclick = async () => {
+    if (!(await confirmBox(`Se volverá a agregar al catálogo: ${xs.map(x => `<b>${esc(x.l)}</b> (${x.n} recibos, ${money(x.monto)})`).join(', ')}.<br>Quedará <b>oculto</b> al digitar recibos, pero sus montos volverán a sumar en el cuadre y los reportes. No se modifica ningún recibo.`, 'Recuperar'))) return;
+    xs.forEach(x => CFG.rubros.push({ k: x.k, l: x.l, p: 0, off: true, grupo: /teatro|evento/i.test(x.l) ? 'Eventos y graduación' : '' })); await saveCfg(); toast('Rubro recuperado ✔', 'ok'); done && done(); }; }, 0);
+  return `<div class="alert warn">⚠ Hay <b>${money(xs.reduce((a, x) => a + x.monto, 0))}</b> en recibos con un rubro que no está en el catálogo (${xs.map(x => esc(x.l)).join(', ')}). Esos montos no se suman, pero sus depósitos sí se restan, y el cuadre se descuadra. <button class="btn sm pri" id="btnHuerf" style="margin-left:6px">Recuperar rubro</button></div>`;
+}
 const rubrosOn = () => { if (!_limpRub && CFG.rubros.some(r => r.recuperado)) { _limpRub = true; CFG.rubros = CFG.rubros.filter(r => !r.recuperado); setTimeout(() => saveCfg(true), 300); } return CFG.rubros; };
 const rubrosVisibles = () => CFG.rubros.filter(x => !x.off);
 /** Rubros frecuentes (⭐). Si no se ha marcado ninguno, se toman los 6 más usados del año */
@@ -575,7 +592,7 @@ defMod({ key: 'banco', label: 'Libro de banco', fields: [
 defMod({ key: 'arqueos', label: 'Historial de arqueos', fields: [
   { k: 'fecha', l: 'Fecha', t: 'date', def: today }, { k: 'caja', l: 'Caja', t: 'select', o: ['GENERAL', 'CAJA CHICA'] },
   { k: 'contado', l: 'Efectivo contado', t: 'money' }, { k: 'esperado', l: 'Efectivo que debe haber', t: 'money' }, { k: 'diferencia', l: 'Diferencia', t: 'money' },
-  { k: 'resultado', l: 'Resultado', t: 'text', badge: v => /CUADRA/.test(v) ? 'ok' : 'bad' }, { k: 'conteo', l: 'Conteo', t: 'text', hide: 1 }, { k: 'snap', l: 'Totales al momento del arqueo', t: 'text', hide: 1 }, { k: 'notas', l: 'Notas', t: 'textarea' }],
+  { k: 'resultado', l: 'Resultado', t: 'text', badge: v => /CUADRA/.test(v) ? 'ok' : 'bad' }, { k: 'conteo', l: 'Conteo', t: 'text', hide: 1 }, { k: 'snap', l: 'Totales al momento del arqueo', t: 'text', hide: 1 }, { k: 'acepta', l: 'Diferencia aceptada (no se arrastra)', t: 'check', hide: 1 }, { k: 'notas', l: 'Notas', t: 'textarea' }],
   table: ['fecha', 'caja', 'contado', 'esperado', 'diferencia', 'resultado', 'notas'], filters: ['caja'], dateField: 'fecha', sort: { k: 'fecha', dir: -1 }, noNew: 1,
   onRow: r => go(r.caja === 'CAJA CHICA' ? 'c:arqueo' : 't:arqueo', { caja: r.caja, id: r._id }), listButtons: [{ l: '+ Nuevo arqueo', fn: () => go('t:arqueo') }] });
 
