@@ -499,9 +499,9 @@ defMod({ key: 'arrendatarios', label: 'Arrendatarios (cafetines y locales)', sco
   { k: 'dia_pago', l: 'Día límite de pago', t: 'number' }, { k: 'forma', l: 'Forma de pago', t: 'select', o: ['Depósito en banco', 'Efectivo', 'Transferencia'] },
   { k: 'estado', l: 'Estado', t: 'select', o: ['ACTIVO', 'INACTIVO'], def: 'ACTIVO', badge: v => v === 'ACTIVO' ? 'ok' : 'bad' },
   { k: 'dui', l: 'DUI', t: 'text' }, { k: 'telefono', l: 'Teléfono', t: 'text' },
-  { k: 'saldo', l: 'Saldo pendiente', t: 'calc', fn: r => money(cv(r, 'saldo')) }, { k: 'notas', l: 'Acuerdos / notas', t: 'textarea', rows: 3 }],
-  table: ['nombre', 'categoria', 'espacio', 'cuota', 'estado', 'saldo', 'telefono'], filters: ['categoria', 'estado'], sort: { k: 'nombre', dir: 1 },
-  prepare: rows => { const ec = estadoCuentaArr(); rows.forEach(r => CALC.set(r, { saldo: (ec[r._id] || {}).saldo || 0 })); },
+  { k: 'saldo', l: 'Saldo vencido (a la fecha)', t: 'calc', fn: r => money(cv(r, 'saldo')) }, { k: 'por_vencer', l: 'Por vencer (resto del contrato)', t: 'calc', fn: r => { const v = cv(r, 'porVencer'); return v ? money(v) + (cv(r, 'fut') ? ' · ' + cv(r, 'fut') : '') : '—'; } }, { k: 'notas', l: 'Acuerdos / notas', t: 'textarea', rows: 3 }],
+  table: ['nombre', 'categoria', 'espacio', 'cuota', 'estado', 'saldo', 'por_vencer', 'telefono'], filters: ['categoria', 'estado'], sort: { k: 'nombre', dir: 1 },
+  prepare: rows => { const ec = estadoCuentaArr(); rows.forEach(r => { const x = ec[r._id] || {}; CALC.set(r, { saldo: x.saldo || 0, porVencer: x.porVencer || 0, fut: (x.fut || []).map(m => cap(MESES[m - 1]).slice(0, 3)).join(', ') }); }); },
   actions: [{ l: '📒 Estado de cuenta', fn: r => go('t:arrcuenta', { id: r._id }) }, { l: '+ Pago', fn: r => openPagoArr({ arr_id: r._id }) }] });
 
 defMod({ key: 'cafetines', label: 'Pagos de arrendamiento', fields: [

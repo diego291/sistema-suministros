@@ -646,10 +646,10 @@ function estadoCuentaArr() {
   const out = {};
   Store.all('arrendatarios').forEach(a => {
     const ini = dobj(a.inicio), fin = dobj(a.fin);
-    let desde = 1, hasta = ultimo;
+    let desde = 1, hasta = ultimo, hastaC = 12;
     if (ini) { if (ini.getFullYear() > y) desde = 13; else if (ini.getFullYear() === y) desde = ini.getMonth() + 1; }
-    if (fin) { if (fin.getFullYear() < y) hasta = 0; else if (fin.getFullYear() === y) hasta = Math.min(hasta, fin.getMonth() + 1); }
-    if (a.estado === 'INACTIVO' && !a.fin) hasta = 0;
+    if (fin) { if (fin.getFullYear() < y) hasta = hastaC = 0; else if (fin.getFullYear() === y) { hasta = Math.min(hasta, fin.getMonth() + 1); hastaC = fin.getMonth() + 1; } }
+    if (a.estado === 'INACTIVO' && !a.fin) hasta = hastaC = 0;
     const meses = Array(12).fill(0); let pag = 0; const lista = [];
     pagos.forEach(pg => {
       if (!(pg.arr_id === a._id || (!pg.arr_id && norm(pg.nombre) === norm(a.nombre)))) return;
@@ -660,7 +660,10 @@ function estadoCuentaArr() {
     const due = Math.max(0, hasta - desde + 1);
     const esp = r2(due * num(a.cuota));
     const pend = []; for (let m = desde; m <= hasta; m++) if (meses[m - 1] + 0.004 < num(a.cuota)) pend.push(m);
-    out[a._id] = { a, meses, desde, hasta, esp, pag: r2(pag), saldo: r2(esp - pag), pend, lista: lista.sort((x, z) => String(x.fecha).localeCompare(z.fecha)) };
+    /* Meses del contrato que aún no vencen (ej. noviembre si el contrato termina en noviembre) */
+    const fut = []; let porVencer = 0; for (let m = Math.max(desde, hasta + 1); m <= hastaC; m++) { const f = r2(num(a.cuota) - meses[m - 1]); if (f > 0.004) { fut.push(m); porVencer += f; } }
+    const saldo = r2(esp - pag), adelantado = saldo < 0 ? -saldo : 0;
+    out[a._id] = { a, meses, desde, hasta, hastaC, esp, pag: r2(pag), saldo, pend, fut, porVencer: r2(Math.max(0, porVencer - adelantado)), espC: r2(Math.max(0, hastaC - desde + 1) * num(a.cuota)), lista: lista.sort((x, z) => String(x.fecha).localeCompare(z.fecha)) };
   });
   return out;
 }
@@ -671,15 +674,15 @@ defView('t:arrcuenta', 'Estado de cuenta de arrendatarios', (el, p) => {
     let filas = Object.values(ec).filter(x => !cat || x.a.categoria === cat).sort((a, b) => String(a.a.categoria).localeCompare(b.a.categoria) || String(a.a.nombre).localeCompare(b.a.nombre));
     if (p.id) filas = filas.filter(x => x.a._id === p.id);
     const cats = [...new Set(Store.all('arrendatarios').map(a => a.categoria).filter(Boolean))];
-    const celda = (x, m) => { const v = x.meses[m - 1], c = num(x.a.cuota); const due = m >= x.desde && m <= x.hasta; if (v + 0.004 >= c && v) return `<td class="c ok-t" title="${money(v)}">✔</td>`; if (v) return `<td class="c warn-t" title="Abono ${money(v)}">◐</td>`; return due ? `<td class="c bad-t" title="Pendiente">✘</td>` : '<td class="c muted">·</td>'; };
+    const celda = (x, m) => { const v = x.meses[m - 1], c = num(x.a.cuota); const due = m >= x.desde && m <= x.hasta; if (v + 0.004 >= c && v) return `<td class="c ok-t" title="${money(v)}">✔</td>`; if (v) return `<td class="c warn-t" title="Abono ${money(v)}">◐</td>`; return due ? `<td class="c bad-t" title="Pendiente">✘</td>` : (m >= x.desde && m <= x.hastaC ? '<td class="c muted" title="Por vencer (contrato)">○</td>' : '<td class="c muted">·</td>'); };
     const T = k => filas.reduce((s, x) => s + num(x[k]), 0);
     el.innerHTML = `<div class="bar"><div class="chips"><span class="chip ${!cat ? 'on' : ''}" data-c="">Todas las categorías</span>${cats.map(c => `<span class="chip ${c === cat ? 'on' : ''}" data-c="${esc(c)}">${esc(c)}</span>`).join('')}</div>
       ${p.id ? '<button class="btn" id="aAll">← Ver todos</button>' : ''}<span class="sp"></span><button class="btn" id="aNew">+ Arrendatario</button><button class="btn" id="aPay">+ Registrar pago</button><button class="btn pri" id="aPr">🖨️ Imprimir</button></div>
-      <div class="kpis"><div class="kpi"><div class="l">Arrendatarios</div><div class="v">${filas.length}</div></div><div class="kpi"><div class="l">Esperado a la fecha</div><div class="v">${money(T('esp'))}</div></div><div class="kpi ok"><div class="l">Pagado</div><div class="v">${money(T('pag'))}</div></div><div class="kpi ${T('saldo') > 0.004 ? 'bad' : 'ok'}"><div class="l">Saldo pendiente</div><div class="v">${money(T('saldo'))}</div></div></div>
-      ${filas.length ? `<div class="tw"><table class="t"><thead><tr><th>Arrendatario</th><th>Categoría</th><th class="r">Cuota</th>${MESES_CAP.map(m => `<th class="c">${m.slice(0, 3)}</th>`).join('')}<th class="r">Esperado</th><th class="r">Pagado</th><th class="r">Saldo</th><th></th></tr></thead><tbody>
-      ${filas.map(x => `<tr data-a="${x.a._id}"><td><b>${esc(x.a.nombre)}</b><br><small class="muted">${esc(x.a.espacio || '')}${x.a.notas ? ' 📝' : ''}</small></td><td>${esc(x.a.categoria || '')}</td><td class="num">${money(x.a.cuota)}</td>${Array.from({ length: 12 }, (_, i) => celda(x, i + 1)).join('')}<td class="num">${money(x.esp)}</td><td class="num">${money(x.pag)}</td><td class="num"><b class="${x.saldo > 0.004 ? 'bad-t' : 'ok-t'}">${money(x.saldo)}</b></td>
+      <div class="kpis"><div class="kpi"><div class="l">Arrendatarios</div><div class="v">${filas.length}</div></div><div class="kpi"><div class="l">Esperado a la fecha</div><div class="v">${money(T('esp'))}</div></div><div class="kpi ok"><div class="l">Pagado</div><div class="v">${money(T('pag'))}</div></div><div class="kpi ${T('saldo') > 0.004 ? 'bad' : 'ok'}"><div class="l">Saldo vencido (a la fecha)</div><div class="v">${money(T('saldo'))}</div></div><div class="kpi ${T('porVencer') > 0.004 ? 'warn' : 'ok'}"><div class="l">Por vencer (resto del contrato)</div><div class="v">${money(T('porVencer'))}</div></div></div>
+      ${filas.length ? `<div class="tw"><table class="t"><thead><tr><th>Arrendatario</th><th>Categoría</th><th class="r">Cuota</th>${MESES_CAP.map(m => `<th class="c">${m.slice(0, 3)}</th>`).join('')}<th class="r">Esperado</th><th class="r">Pagado</th><th class="r">Saldo</th><th class="r">Por vencer</th><th></th></tr></thead><tbody>
+      ${filas.map(x => `<tr data-a="${x.a._id}"><td><b>${esc(x.a.nombre)}</b><br><small class="muted">${esc(x.a.espacio || '')}${x.a.notas ? ' 📝' : ''}</small></td><td>${esc(x.a.categoria || '')}</td><td class="num">${money(x.a.cuota)}</td>${Array.from({ length: 12 }, (_, i) => celda(x, i + 1)).join('')}<td class="num">${money(x.esp)}</td><td class="num">${money(x.pag)}</td><td class="num"><b class="${x.saldo > 0.004 ? 'bad-t' : 'ok-t'}">${money(x.saldo)}</b></td><td class="num ${x.porVencer > 0.004 ? 'warn-t' : 'muted'}" title="${esc(x.fut.map(m => MESES_CAP[m - 1]).join(', '))}">${x.porVencer > 0.004 ? money(x.porVencer) + '<br><small>' + esc(x.fut.map(m => MESES_CAP[m - 1].slice(0, 3)).join(', ')) + '</small>' : '—'}</td>
         <td class="act"><button class="btn sm" data-pay>+ Pago</button> <button class="btn sm" data-carta ${x.saldo > 0.004 ? '' : 'disabled'}>✉️ Carta</button></td></tr>`).join('')}</tbody></table></div>
-      <p class="muted" style="font-size:12px">✔ pagado · ◐ abono parcial · ✘ pendiente · se cobra desde el inicio del contrato hasta el mes actual (o el fin del contrato). El mes del pago se toma de “Mes que cancela”.</p>`
+      <p class="muted" style="font-size:12px">✔ pagado · ◐ abono parcial · ✘ pendiente (ya venció) · ○ por vencer (mes del contrato que aún no llega) · el saldo cuenta hasta el mes actual; “Por vencer” muestra lo que falta hasta el fin del contrato. El mes del pago se toma de “Mes que cancela”.</p>`
       : `<div class="empty">No hay arrendatarios. Agregue cafetines, chalets o locales con <b>+ Arrendatario</b>.</div>`}
       ${p.id && filas[0] ? `<div class="card"><h3>Pagos registrados de ${esc(filas[0].a.nombre)}</h3><table class="t"><thead><tr><th>Mes</th><th>Fecha</th><th>Recibo</th><th>Comprobante</th><th class="r">Cantidad</th><th>Obs.</th></tr></thead><tbody>${filas[0].lista.map(pg => `<tr><td>${esc(pg.mes || '')}</td><td>${fdate(pg.fecha)}</td><td>${esc(pg.recibo || '')}</td><td>${esc(pg.comprobante || '')}</td><td class="num">${money(pg.cantidad)}</td><td>${esc(pg.obs || '')}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">Sin pagos</td></tr>'}</tbody></table></div>` : ''}`;
     $$('[data-c]', el).forEach(c => c.onclick = () => { cat = c.dataset.c; LS.set('arrCat', cat); draw(); });
@@ -688,7 +691,7 @@ defView('t:arrcuenta', 'Estado de cuenta de arrendatarios', (el, p) => {
     $('#aPay', el).onclick = () => openPagoArr({}, draw);
     $$('tr[data-a]', el).forEach(tr => tr.onclick = e => {
       const x = ec[tr.dataset.a]; const a = x.a;
-      if (e.target.dataset.pay !== undefined) { openPagoArr({ arr_id: a._id, meses: x.pend }, draw); return; }
+      if (e.target.dataset.pay !== undefined) { openPagoArr({ arr_id: a._id, meses: x.pend.length ? x.pend : x.fut.slice(0, 1) }, draw); return; }
       if (e.target.dataset.carta !== undefined) { const tpl = Store.all('plantillas').find(t => /cobro/i.test(t.nombre)); const meses = x.pend.map(m => MESES[m - 1]).join(', '); go('d:generar', { id: tpl && tpl._id, datos: { destinatario: a.nombre, concepto: 'arrendamiento del ' + String(a.categoria || 'local').toLowerCase() + (a.espacio ? ' (' + a.espacio + ')' : ''), detalle: `Según nuestros registros, tiene pendiente(s) ${x.pend.length} mes(es) (${meses}) por un total de ${money(x.saldo)}, a razón de ${money(a.cuota)} mensuales.` } }); return; }
       if (!p.id) go('t:arrcuenta', { id: a._id }); else openForm('arrendatarios', a, { onDone: draw });
     });
