@@ -36,7 +36,9 @@ defMod({
 
 /* ---------------- RECIBOS DE INGRESO ---------------- */
 /* Todos los rubros cuentan en cálculos (aunque estén ocultos); "off" solo los oculta al digitar recibos */
-const rubrosOn = () => CFG.rubros;
+/* Limpieza: quita rubros agregados automáticamente por una versión anterior (marcados "recuperado") */
+let _limpRub = false;
+const rubrosOn = () => { if (!_limpRub && CFG.rubros.some(r => r.recuperado)) { _limpRub = true; CFG.rubros = CFG.rubros.filter(r => !r.recuperado); setTimeout(() => saveCfg(true), 300); } return CFG.rubros; };
 const rubrosVisibles = () => CFG.rubros.filter(x => !x.off);
 /** Rubros frecuentes (⭐). Si no se ha marcado ninguno, se toman los 6 más usados del año */
 function rubrosFrecuentes() {
