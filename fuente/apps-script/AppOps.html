@@ -38,23 +38,42 @@ defView('c:panel', 'Caja chica · panel de control', el => {
 /* ---------- CAJA CHICA: REEMBOLSO ---------- */
 defView('c:reembolso', 'Solicitud de reembolso de caja chica', el => {
   const rows = Store.all('cajachica'); const x = prepCaja(rows);
-  let caja = x.caja;
+  let caja = x.caja, efMan = null;
   const draw = () => {
     const gs = rows.filter(r => cv(r, 'cajaN') === caja && num(r.haber)).sort((a, b) => String(a.fecha).localeCompare(b.fecha));
-    const tot = gs.reduce((s, r) => s + num(r.haber), 0);
+    const tot = r2(gs.reduce((s, r) => s + num(r.haber), 0));
+    /* Liquidación del fondo: gastos documentados + efectivo en caja = fondo asignado */
+    const fondo = num(CFG.caja.fondo), debeHaber = r2(fondo - tot);
+    const ini = gs.length ? toYMD(gs[0].fecha) : '';
+    const arq = Store.all('arqueos').filter(a => a.caja === 'CAJA CHICA' && (!ini || toYMD(a.fecha) >= ini)).sort((a, b) => String(b.fecha).localeCompare(a.fecha) || num(b._upd) - num(a._upd))[0];
+    const efectivo = efMan !== null ? efMan : arq ? num(arq.contado) : debeHaber;
+    const totLiq = r2(tot + efectivo), difLiq = r2(totLiq - fondo);
+    const resLiq = Math.abs(difLiq) < 0.01 ? '✔ CUADRA' : difLiq < 0 ? 'FALTANTE de ' + money(-difLiq) : 'SOBRANTE de ' + money(difLiq);
+    const filasLiq = [['Fondo de caja chica asignado', fondo], ['Gastos documentados (a reembolsar)', tot], ['Efectivo en caja' + (efMan === null && arq ? ' (arqueo del ' + fdate(arq.fecha) + ')' : efMan === null ? ' (según registro)' : ''), efectivo], ['Total gastos + efectivo', totLiq]];
     const f = gs.map(r => toYMD(r.fecha));
     const cat = {}; gs.forEach(r => cat[r.categoria || 'Sin categoría'] = (cat[r.categoria || 'Sin categoría'] || 0) + num(r.haber));
     el.innerHTML = `<div class="bar"><label class="f"><span>Caja</span><select class="in" id="rC">${Array.from({ length: x.caja }, (_, i) => i + 1).map(n => `<option value="${n}" ${n === caja ? 'selected' : ''}>C${n}${n === x.caja ? ' (actual)' : ''}</option>`).join('')}</select></label>
       <label class="f"><span>Fecha de solicitud</span><input class="in" type="date" id="rF" value="${today()}"></label><span class="sp"></span><button class="btn pri" id="rP">🖨️ Imprimir solicitud</button></div>
       <div class="alert info">Caja C${caja} · ${gs.length} comprobante(s) · Período ${fdate(f[0]) || '—'} al ${fdate(f[f.length - 1]) || '—'} · <b>Total a reembolsar: ${money(tot)}</b></div>
+      <div class="card" style="margin-bottom:12px"><h3>Liquidación del fondo</h3><table class="t" style="max-width:560px"><tbody>
+        <tr><td>Fondo de caja chica asignado</td><td class="num">${money(fondo)}</td></tr>
+        <tr><td>(−) Gastos documentados (a reembolsar)</td><td class="num">${money(tot)}</td></tr>
+        <tr><td>Efectivo que debe haber en caja</td><td class="num">${money(debeHaber)}</td></tr>
+        <tr><td>Efectivo en caja ${efMan === null ? (arq ? `<span class="muted" style="font-size:12px">· del arqueo del ${fdate(arq.fecha)}</span>` : '<span class="muted" style="font-size:12px">· según registro (no hay arqueo)</span>') : '<span class="tag warn">escrito a mano</span>'}</td><td class="r"><input class="in num" type="number" step="any" id="rEf" value="${efectivo.toFixed(2)}" style="width:120px"> <button class="btn sm" id="rEfR" title="Volver al arqueo / registro">↺</button></td></tr>
+        <tr><td><b>Total: gastos + efectivo</b></td><td class="num"><b>${money(totLiq)}</b></td></tr>
+        <tr><td><b>Diferencia contra el fondo</b></td><td class="num ${Math.abs(difLiq) < .01 ? 'ok-t' : 'bad-t'}"><b>${money(difLiq)} · ${resLiq}</b></td></tr></tbody></table></div>
       <div class="tw"><table class="t"><thead><tr><th>N°</th><th>Fecha</th><th>Comprobante</th><th>N° documento</th><th>Concepto</th><th>Proveedor</th><th>Categoría</th><th class="r">Valor</th></tr></thead><tbody>
       ${gs.map((r, i) => `<tr><td>${i + 1}</td><td>${fdate(r.fecha)}</td><td>${esc(r.comprobante || '')}</td><td>${esc(r.documento || '')}</td><td>${esc(r.concepto)}</td><td>${esc(r.proveedor || '')}</td><td>${esc(r.categoria || '')}</td><td class="num">${money(r.haber)}</td></tr>`).join('')}</tbody><tfoot><tr><td colspan="7">TOTAL</td><td class="num">${money(tot)}</td></tr></tfoot></table></div>`;
-    $('#rC', el).onchange = e => { caja = Number(e.target.value); draw(); };
+    $('#rC', el).onchange = e => { caja = Number(e.target.value); efMan = null; draw(); };
+    $('#rEf', el).onchange = e => { efMan = num(e.target.value); draw(); };
+    $('#rEfR', el).onclick = () => { efMan = null; draw(); };
     $('#rP', el).onclick = () => Print.show('Reembolso caja chica C' + caja, `<div class="page">${membrete()}<div class="ptitle">SOLICITUD DE REEMBOLSO DE CAJA CHICA</div>
       <table style="font-size:11.5px;margin:6px 0 10px"><tr><td><b>Caja:</b> C${caja}</td><td><b>Solicitud N°:</b> ${caja}</td><td><b>Fecha de solicitud:</b> ${fdate($('#rF', el).value)}</td></tr><tr><td colspan="3"><b>Período:</b> Del ${fdate(f[0])} al ${fdate(f[f.length - 1])}</td></tr></table>
       ${ptable([{ l: 'N°', w: '24px' }, { l: 'Fecha', w: '62px' }, 'Comprobante', 'N° documento', 'Concepto', 'Proveedor / nombre', 'Categoría', { l: 'Valor', w: '60px' }], gs.map((r, i) => `<tr><td class="c">${i + 1}</td><td>${fdate(r.fecha)}</td><td>${esc(r.comprobante || '')}</td><td style="font-size:9px">${esc(r.documento || '')}</td><td>${esc(r.concepto)}</td><td>${esc(r.proveedor || '')}</td><td>${esc(r.categoria || '')}</td><td class="r">${money(r.haber)}</td></tr>`), { foot: `<tr class="tot"><td colspan="7">TOTAL A REEMBOLSAR</td><td class="r">${money(tot)}</td></tr>` })}
       <p><b>Son:</b> ${numLetras(tot)}</p>
-      <div style="width:55%"><b>Resumen por categoría</b>${ptable(['Categoría', 'Monto'], Object.entries(cat).map(([c, v]) => `<tr><td>${esc(c)}</td><td class="r">${money(v)}</td></tr>`))}</div>
+      <div style="display:flex;gap:16px;align-items:flex-start;break-inside:avoid"><div style="flex:1"><b>Resumen por categoría</b>${ptable(['Categoría', 'Monto'], Object.entries(cat).map(([c, v]) => `<tr><td>${esc(c)}</td><td class="r">${money(v)}</td></tr>`))}</div>
+      <div style="flex:1"><b>Liquidación del fondo</b>${ptable(['Concepto', 'Monto'], filasLiq.map(([a, b]) => `<tr><td>${a}</td><td class="r">${money(b)}</td></tr>`), { foot: `<tr class="tot"><td>DIFERENCIA ${Math.abs(difLiq) < .01 ? '✔ CUADRA' : difLiq < 0 ? '(FALTANTE)' : '(SOBRANTE)'}</td><td class="r">${money(difLiq)}</td></tr>` })}</div></div>
+      <div style="display:none"><b>Resumen por categoría</b>${ptable(['Categoría', 'Monto'], Object.entries(cat).map(([c, v]) => `<tr><td>${esc(c)}</td><td class="r">${money(v)}</td></tr>`))}</div>
       ${firmasDoc('reembolso')}</div>`);
   };
   draw();
