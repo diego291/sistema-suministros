@@ -53,7 +53,7 @@ defView('c:reembolso', 'Solicitud de reembolso de caja chica', el => {
     const f = gs.map(r => toYMD(r.fecha));
     const cat = {}; gs.forEach(r => cat[r.categoria || 'Sin categoría'] = (cat[r.categoria || 'Sin categoría'] || 0) + num(r.haber));
     el.innerHTML = `<div class="bar"><label class="f"><span>Caja</span><select class="in" id="rC">${Array.from({ length: x.caja }, (_, i) => i + 1).map(n => `<option value="${n}" ${n === caja ? 'selected' : ''}>C${n}${n === x.caja ? ' (actual)' : ''}</option>`).join('')}</select></label>
-      <label class="f"><span>Fecha de solicitud</span><input class="in" type="date" id="rF" value="${today()}"></label><span class="sp"></span><button class="btn pri" id="rP">🖨️ Imprimir solicitud</button></div>
+      <label class="f"><span>Fecha de solicitud</span><input class="in" type="date" id="rF" value="${today()}"></label><span class="sp"></span><select class="in" id="rOrd" style="width:auto"></select><button class="btn" id="rDir"></button><button class="btn pri" id="rP">🖨️ Imprimir solicitud</button></div>
       <div class="alert info">Caja C${caja} · ${gs.length} comprobante(s) · Período ${fdate(f[0]) || '—'} al ${fdate(f[f.length - 1]) || '—'} · <b>Total a reembolsar: ${money(tot)}</b></div>
       <div class="card" style="margin-bottom:12px"><h3>Liquidación del fondo</h3><table class="t" style="max-width:560px"><tbody>
         <tr><td>Fondo de caja chica asignado</td><td class="num">${money(fondo)}</td></tr>
@@ -64,6 +64,7 @@ defView('c:reembolso', 'Solicitud de reembolso de caja chica', el => {
         <tr><td><b>Diferencia contra el fondo</b></td><td class="num ${Math.abs(difLiq) < .01 ? 'ok-t' : 'bad-t'}"><b>${money(difLiq)} · ${resLiq}</b></td></tr></tbody></table></div>
       <div class="tw"><table class="t"><thead><tr><th>N°</th><th>Fecha</th><th>Comprobante</th><th>N° documento</th><th>Concepto</th><th>Proveedor</th><th>Categoría</th><th class="r">Valor</th></tr></thead><tbody>
       ${gs.map((r, i) => `<tr><td>${i + 1}</td><td>${fdate(r.fecha)}</td><td>${esc(r.comprobante || '')}</td><td>${esc(r.documento || '')}</td><td>${esc(r.concepto)}</td><td>${esc(r.proveedor || '')}</td><td>${esc(r.categoria || '')}</td><td class="num">${money(r.haber)}</td></tr>`).join('')}</tbody><tfoot><tr><td colspan="7">TOTAL</td><td class="num">${money(tot)}</td></tr></tfoot></table></div>`;
+    controlOrden($('.tw', el), 'reembolso', $('#rOrd', el), $('#rDir', el));
     $('#rC', el).onchange = e => { caja = Number(e.target.value); efMan = null; draw(); };
     $('#rEf', el).onchange = e => { efMan = num(e.target.value); draw(); };
     $('#rEfR', el).onclick = () => { efMan = null; draw(); };
@@ -74,7 +75,7 @@ defView('c:reembolso', 'Solicitud de reembolso de caja chica', el => {
       <div style="display:flex;gap:16px;align-items:flex-start;break-inside:avoid"><div style="flex:1"><b>Resumen por categoría</b>${ptable(['Categoría', 'Monto'], Object.entries(cat).map(([c, v]) => `<tr><td>${esc(c)}</td><td class="r">${money(v)}</td></tr>`))}</div>
       <div style="flex:1"><b>Liquidación del fondo</b>${ptable(['Concepto', 'Monto'], filasLiq.map(([a, b]) => `<tr><td>${a}</td><td class="r">${money(b)}</td></tr>`), { foot: `<tr class="tot"><td>DIFERENCIA ${Math.abs(difLiq) < .01 ? '✔ CUADRA' : difLiq < 0 ? '(FALTANTE)' : '(SOBRANTE)'}</td><td class="r">${money(difLiq)}</td></tr>` })}</div></div>
       <div style="display:none"><b>Resumen por categoría</b>${ptable(['Categoría', 'Monto'], Object.entries(cat).map(([c, v]) => `<tr><td>${esc(c)}</td><td class="r">${money(v)}</td></tr>`))}</div>
-      ${firmasDoc('reembolso')}</div>`);
+      ${firmasDoc('reembolso')}</div>`, { ordKey: 'reembolso' });
   };
   draw();
 });

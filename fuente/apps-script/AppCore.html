@@ -850,10 +850,57 @@ function downloadBlob(content, name, type) {
   document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
 }
 
+/* ======================= Ordenar tablas (impresión y pantallas) =======================
+   Ordena las filas de las tablas por la columna elegida (fecha, número, monto o texto), de menor a mayor
+   o al revés. Respeta filas de sección y de totales, y vuelve a numerar la columna N°. */
+function claveCelda(t) {
+  t = String(t || '').trim(); if (!t || t === '—' || t === '-') return null;
+  let m = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/); if (m) return { n: Number(m[3] + m[2].padStart(2, '0') + m[1].padStart(2, '0')) };
+  m = t.replace(/[,\s]/g, '').match(/^-?\$?-?\d+(\.\d+)?$/); if (m) return { n: parseFloat(t.replace(/[^\d.\-]/g, '')) };
+  return { s: t };
+}
+const cmpClave = (a, b) => a === null ? (b === null ? 0 : 1) : b === null ? -1 : (a.n !== undefined && b.n !== undefined) ? a.n - b.n : String(a.n ?? a.s).localeCompare(String(b.n ?? b.s), 'es', { numeric: true, sensitivity: 'base' });
+function encabezadosOrden(root) { const hs = []; $$('table.pt, table.t', root).forEach(tb => { const tr = $$('thead tr', tb); if (tr.length !== 1) return; $$('th', tr[0]).forEach((th, i) => { const h = th.textContent.trim(); if (h && !/^(n[°º]|#|)$/i.test(h) && !hs.includes(h)) hs.push(h); }); }); return hs; }
+function ordenarTablas(root, h, dir) {
+  if (!h) return; dir = dir < 0 ? -1 : 1;
+  $$('table.pt, table.t', root).forEach(tb => {
+    const trs = $$('thead tr', tb); if (trs.length !== 1) return;
+    const ths = $$('th', trs[0]); const ci = ths.findIndex(th => th.textContent.trim() === h); if (ci < 0) return;
+    const ni = /^(n[°º]|#)$/i.test((ths[0] || {}).textContent ? ths[0].textContent.trim() : '') ? 0 : -1;
+    $$('tbody', tb).forEach(tbd => {
+      const rows = Array.from(tbd.children); let seg = [];
+      const flush = (before) => { if (seg.length > 1) { const s2 = seg.slice().sort((a, b) => dir * cmpClave(claveCelda(a.children[ci].textContent), claveCelda(b.children[ci].textContent)) || (Number(a.dataset.o) - Number(b.dataset.o))); s2.forEach(r => tbd.insertBefore(r, before)); } seg = []; };
+      rows.forEach((r, i) => { if (r.dataset.o === undefined) r.dataset.o = i; const ok = r.children.length === ths.length && !r.classList.contains('tot') && ![...r.children].some(td => td.colSpan > 1); if (ok) seg.push(r); else flush(r); });
+      flush(null);
+      if (ni === 0) { let k = 0; Array.from(tbd.children).forEach(r => { if (r.children.length === ths.length && !r.classList.contains('tot') && ![...r.children].some(td => td.colSpan > 1) && /^\d+$/.test(r.children[0].textContent.trim())) r.children[0].textContent = ++k; }); }
+    });
+  });
+}
+/** Restaura el orden original (como lo generó el reporte) */
+function ordenOriginal(root) { $$('table.pt tbody, table.t tbody', root).forEach(tbd => { const rows = Array.from(tbd.children); if (!rows.some(r => r.dataset.o !== undefined)) return; rows.slice().sort((a, b) => Number(a.dataset.o ?? 1e9) - Number(b.dataset.o ?? 1e9)).forEach(r => tbd.appendChild(r)); }); }
+/** Control de orden reutilizable: <select> + botón de sentido, recordado con una clave */
+function controlOrden(root, key, sel, btn) {
+  const st = LS.get('ord_' + key, { h: '', dir: 1 }); const hs = encabezadosOrden(root);
+  sel.innerHTML = `<option value="">Orden: como viene</option>${hs.map(h => `<option ${h === st.h ? 'selected' : ''}>${esc(h)}</option>`).join('')}`;
+  if (st.h && !hs.includes(st.h)) st.h = '';
+  const pinta = () => { btn.textContent = st.dir > 0 ? '↑ Menor a mayor' : '↓ Mayor a menor'; btn.style.display = st.h ? '' : 'none'; };
+  const aplica = () => { ordenOriginal(root); ordenarTablas(root, st.h, st.dir); pinta(); LS.set('ord_' + key, st); };
+  sel.onchange = () => { st.h = sel.value; aplica(); }; btn.onclick = () => { st.dir = -st.dir; aplica(); };
+  sel.style.display = hs.length ? '' : 'none'; aplica();
+}
+/* Cualquier tabla en pantalla: clic en el encabezado ordena (otro clic invierte). Las listas con orden propio no se tocan. */
+document.addEventListener('click', e => {
+  const th = e.target.closest && e.target.closest('#view table.t thead th'); if (!th || th.dataset.sk !== undefined || th.querySelector('input,select,button')) return;
+  const tb = th.closest('table'); if ($$('thead tr', tb).length !== 1) return;
+  const h = th.textContent.replace(/[▲▼]/g, '').trim(); if (!h || /^(n[°º]|#)$/i.test(h)) return;
+  const dir = tb.dataset.ordH === h ? -num(tb.dataset.ordD || 1) : 1; tb.dataset.ordH = h; tb.dataset.ordD = dir;
+  $$('thead th', tb).forEach(x => x.textContent = x.textContent.replace(/ [▲▼]$/, '')); th.textContent = h + (dir > 0 ? ' ▲' : ' ▼');
+  ordenOriginal(tb.parentNode); ordenarTablas(tb.parentNode, h + (dir > 0 ? ' ▲' : ' ▼'), dir);
+});
 /* ======================= Impresión ======================= */
 const Print = {
   title: '',
-  show(title, pagesHtml) {
+  show(title, pagesHtml, opts) {
     this.title = title;
     $('#pvTitle').textContent = title; $('#printRoot').innerHTML = pagesHtml;
     $$('#printRoot .page').forEach(pg => { if ($('.memb', pg) && !$('.pfoot', pg)) pg.insertAdjacentHTML('beforeend', pfoot()); });
@@ -862,6 +909,7 @@ const Print = {
     this.key = 'pcols_' + norm(pt ? pt.textContent.replace(/\d+/g, '') : title).replace(/ /g, '_').slice(0, 60);
     this.applyCols(LS.get(this.key, []));
     const n = this.headers().length; $('#pvCols').style.display = n > 1 ? '' : 'none';
+    controlOrden($('#printRoot'), (opts && opts.ordKey) || this.key, $('#pvSort'), $('#pvDir'));
   },
   /** Encabezados únicos de las tablas del reporte */
   headers() { const hs = []; $$('#printRoot table.pt thead th').forEach(th => { const t = th.textContent.trim(); if (t && !hs.includes(t)) hs.push(t); }); return hs; },
