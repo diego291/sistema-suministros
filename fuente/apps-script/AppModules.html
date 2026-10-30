@@ -36,19 +36,7 @@ defMod({
 
 /* ---------------- RECIBOS DE INGRESO ---------------- */
 /* Todos los rubros cuentan en cálculos (aunque estén ocultos); "off" solo los oculta al digitar recibos */
-/* Si hay recibos con montos en un rubro que ya no está en el catálogo (p. ej. se eliminó), el rubro se
-   recupera solo (oculto en el recibo) para que sus montos sigan sumando en cuadres y reportes. */
-const RUBRO_NOMBRES = { teatro: 'Evento de teatro' };
-let _rrN = -1;
-function repararRubros_() {
-  if (typeof Store === 'undefined' || !Store.all) return; const rs = Store.all('recibos'); if (!rs.length || rs.length === _rrN) return; _rrN = rs.length;
-  const ks = new Set(CFG.rubros.map(r => r.k)), fal = new Map();
-  rs.forEach(r => { for (const k in r) if (k.startsWith('r_') && num(r[k]) && !ks.has(k.slice(2))) fal.set(k.slice(2), r2((fal.get(k.slice(2)) || 0) + num(r[k]))); });
-  if (!fal.size) return;
-  fal.forEach((m, k) => CFG.rubros.push({ k, l: RUBRO_NOMBRES[k] || cap(k.replace(/_/g, ' ')), p: 0, off: true, recuperado: true }));
-  setTimeout(() => { saveCfg(true); toast(`Se recuperó el rubro ${[...fal.keys()].map(k => '“' + (RUBRO_NOMBRES[k] || k) + '”').join(', ')} (tenía ${money([...fal.values()].reduce((a, b) => a + b, 0))} en recibos y no estaba en el catálogo). Quedó oculto en el recibo.`, 'ok', 9000); }, 300);
-}
-const rubrosOn = () => { repararRubros_(); return CFG.rubros; };
+const rubrosOn = () => CFG.rubros;
 const rubrosVisibles = () => CFG.rubros.filter(x => !x.off);
 /** Rubros frecuentes (⭐). Si no se ha marcado ninguno, se toman los 6 más usados del año */
 function rubrosFrecuentes() {
