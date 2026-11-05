@@ -144,6 +144,8 @@ function dispatch_(req) {
       case 'sync': return { ok: true, data: sync_(req) };
       case 'createYear': return { ok: true, data: createYear_(req.year, req.copyFrom, req.copyMods || []) };
       case 'savePdf': return { ok: true, data: savePdf_(req.html, req.name, req.year, req.pdf) };
+      case 'pubCheck': return { ok: true, data: pubCheck_(req.folderId) };
+      case 'publicar': return { ok: true, data: publicar_(req) };
       case 'pdfBatch': return { ok: true, data: pdfBatch_(req) };
       case 'pdfZip': return { ok: true, data: pdfZip_(req.folderId, req.name) };
       case 'backup': return { ok: true, data: backup_() };
@@ -707,4 +709,72 @@ function resumenDiario() {
   var txt = 'AGENDA DE HOY (' + hoy + ')\n\n' + (evs.map(function (e) { return '• ' + (e.hora || 'Todo el día') + ' — ' + e.titulo; }).join('\n') || 'Sin actividades.');
   if (vencidas.length) txt += '\n\nPENDIENTES ATRASADAS (' + vencidas.length + ')\n' + vencidas.slice(0, 30).map(function (e) { return '• ' + e.fecha + ' — ' + e.titulo; }).join('\n');
   MailApp.sendEmail(mail, '📅 Agenda de hoy · ' + evs.length + ' actividad(es)', txt + '\n\n— Sistema de Suministros');
+}
+
+
+/* ======================= PUBLICACIONES EN DRIVE COMPARTIDO =======================
+   Escribe una hoja de Google (siempre la misma, el link no cambia) y PDFs en una carpeta compartida.
+   Solo se ejecuta cuando el usuario pulsa "Publicar" (nunca automático). */
+function pubCheck_(folderId) {
+  var f = DriveApp.getFolderById(folderId);
+  var t = f.createFile('prueba_permiso.txt', 'ok'); t.setTrashed(true);
+  return { nombre: f.getName(), url: f.getUrl() };
+}
+function publicar_(req) {
+  var folder = DriveApp.getFolderById(req.folderId);
+  var ss = null;
+  if (req.sheetId) { try { ss = SpreadsheetApp.openById(req.sheetId); } catch (e) { ss = null; } }
+  if (!ss) { ss = SpreadsheetApp.create(req.sheetName || 'Publicado'); DriveApp.getFileById(ss.getId()).moveTo(folder); }
+  else if (req.sheetName && ss.getName() !== req.sheetName) ss.rename(req.sheetName);
+  var hechos = [];
+  (req.tabs || []).forEach(function (t, idx) {
+    var sh = ss.getSheetByName(t.name) || ss.insertSheet(t.name);
+    sh.getProtections(SpreadsheetApp.ProtectionType.SHEET).forEach(function (pr) { pr.remove(); });
+    sh.clear(); sh.clearConditionalFormatRules();
+    try { sh.getRange(1, 1, sh.getMaxRows(), sh.getMaxColumns()).breakApart(); } catch (e) { }
+    var nc = Math.max(1, t.headers.length), nr = (t.rows || []).length, color = t.color || '#1f3864';
+    if (sh.getMaxColumns() < nc) sh.insertColumnsAfter(sh.getMaxColumns(), nc - sh.getMaxColumns());
+    if (sh.getMaxRows() < nr + 4) sh.insertRowsAfter(sh.getMaxRows(), nr + 4 - sh.getMaxRows());
+    sh.getRange(1, 1, 1, nc).merge().setValue(t.title || t.name).setBackground(color).setFontColor('#ffffff').setFontWeight('bold').setFontSize(13).setHorizontalAlignment('center').setVerticalAlignment('middle');
+    sh.setRowHeight(1, 30);
+    sh.getRange(2, 1, 1, nc).merge().setValue(t.subtitle || '').setBackground(t.light || '#ddebf7').setFontColor(color).setFontSize(10).setHorizontalAlignment('center');
+    sh.getRange(3, 1, 1, nc).setValues([t.headers]).setBackground(color).setFontColor('#ffffff').setFontWeight('bold').setHorizontalAlignment('center').setVerticalAlignment('middle').setWrap(true);
+    if (nr) {
+      var rg = sh.getRange(4, 1, nr, nc);
+      rg.setValues(t.rows.map(function (r) { var x = r.slice(0, nc); while (x.length < nc) x.push(''); return x; }));
+      rg.setBorder(true, true, true, true, true, true, '#d0d7e1', SpreadsheetApp.BorderStyle.SOLID).setVerticalAlignment('middle').setFontSize(10);
+      (t.fmt || []).forEach(function (f, c) {
+        var col = sh.getRange(4, c + 1, nr, 1);
+        if (f === 'money') col.setNumberFormat('"$"#,##0.00').setHorizontalAlignment('right');
+        else if (f === 'num') col.setNumberFormat('0.##').setHorizontalAlignment('right');
+        else if (f === 'center') col.setHorizontalAlignment('center');
+        else if (f === 'text') col.setNumberFormat('@');
+      });
+      if (t.bg) rg.setBackgrounds(t.bg.map(function (r) { return r.slice(0, nc).map(function (v) { return v || '#ffffff'; }); }));
+      if (t.fc) rg.setFontColors(t.fc.map(function (r) { return r.slice(0, nc).map(function (v) { return v || '#1d2433'; }); }));
+      (t.bold || []).forEach(function (i) { sh.getRange(4 + i, 1, 1, nc).setFontWeight('bold').setBackground(t.light || '#ddebf7'); });
+    }
+    (t.widths || []).forEach(function (w, c) { if (w) sh.setColumnWidth(c + 1, w); });
+    sh.setFrozenRows(3); sh.setHiddenGridlines(true);
+    sh.protect().setDescription('Publicado desde el Sistema de Suministros').setWarningOnly(true);
+    ss.setActiveSheet(sh); ss.moveActiveSheet(idx + 1);
+    hechos.push(t.name);
+  });
+  /* Quitar pestañas que ya no se publican (y la "Hoja 1" vacía inicial) */
+  ss.getSheets().forEach(function (sh) { if (hechos.indexOf(sh.getName()) < 0 && ss.getSheets().length > 1) ss.deleteSheet(sh); });
+  if (hechos.length) ss.setActiveSheet(ss.getSheetByName(hechos[0]));
+  /* PDFs: se reemplaza el anterior con el mismo nombre; copia opcional en Historial/AAAA-MM */
+  var files = [], hist = null;
+  if (req.historial && (req.pdfs || []).length) {
+    var hf = folder.getFoldersByName('Historial'); var h = hf.hasNext() ? hf.next() : folder.createFolder('Historial');
+    var mf = h.getFoldersByName(req.mes); hist = mf.hasNext() ? mf.next() : h.createFolder(req.mes);
+  }
+  (req.pdfs || []).forEach(function (p) {
+    var viejos = folder.getFilesByName(p.name + '.pdf'); while (viejos.hasNext()) viejos.next().setTrashed(true);
+    var blob = Utilities.newBlob(Utilities.base64Decode(p.pdf), 'application/pdf', p.name + '.pdf');
+    var f = folder.createFile(blob); files.push({ name: f.getName(), url: f.getUrl() });
+    if (hist) { var hv = hist.getFilesByName(p.name + ' ' + req.fecha + '.pdf'); while (hv.hasNext()) hv.next().setTrashed(true); hist.createFile(blob.copyBlob().setName(p.name + ' ' + req.fecha + '.pdf')); }
+  });
+  SpreadsheetApp.flush();
+  return { sheetId: ss.getId(), sheetUrl: ss.getUrl(), folderUrl: folder.getUrl(), files: files, tabs: hechos };
 }

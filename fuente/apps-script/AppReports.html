@@ -1048,4 +1048,147 @@ function buscadorAlumnos(host, o = {}) {
 }
 
 window.__OK = (window.__OK || []).concat('AppReports');
+/* ======================= PUBLICACIONES (Drive compartido) =======================
+   Arma una hoja de Google con pestañas y PDFs con el diseño de los reportes, muestra la vista previa
+   y solo publica cuando el usuario lo confirma. */
+const PUB_TABS = [['resumen', 'Resumen'], ['cafetines', 'Cafetines'], ['pagos', 'Pagos de cafetines'], ['caja', 'Caja chica'], ['cajares', 'Caja chica · resumen']];
+const PUB_PDFS = [['caf', 'Estado de cuenta de cafetines'], ['ccAct', 'Caja chica - caja actual'], ['ccAnual', 'Caja chica - registro anual']];
+function pubCfg() {
+  CFG.pub = Object.assign({ folder: '', folderNombre: '', sheetId: '', sheetUrl: '', nombre: 'Cafetines y caja chica {año} (publicado)', tabs: { resumen: 1, cafetines: 1, pagos: 1, caja: 1, cajares: 1 }, pdfs: { caf: 1, ccAct: 1, ccAnual: 0 },
+    cajaAlcance: 'todo', cajaDesde: '', ocultarDui: true, ocultarNotas: false, historial: true, nota: '', log: [] }, CFG.pub || {});
+  return CFG.pub;
+}
+const idCarpeta = t => { const m = String(t || '').match(/folders\/([A-Za-z0-9_-]{10,})/) || String(t || '').match(/[?&]id=([A-Za-z0-9_-]{10,})/); return m ? m[1] : /^[A-Za-z0-9_-]{15,}$/.test(String(t).trim()) ? String(t).trim() : ''; };
+function datosCajaPub(c) {
+  const rows = Store.all('cajachica'); prepCaja(rows);
+  const ord = rows.slice().sort((a, b) => (num(a.orden) || num(a._upd)) - (num(b.orden) || num(b._upd)));
+  const actual = ord.length ? cv(ord[ord.length - 1], 'cajaN') : 0;
+  const sel = ord.filter(r => c.cajaAlcance === 'actual' ? cv(r, 'cajaN') === actual : c.cajaAlcance === 'desde' && c.cajaDesde ? toYMD(r.fecha) >= c.cajaDesde : true);
+  return { ord, sel, actual, saldo: ord.length ? cv(ord[ord.length - 1], 'saldo') : num(CFG.caja.fondo) };
+}
+function pubTabsSpec(c) {
+  const ec = Object.values(estadoCuentaArr()).filter(x => x.a.estado !== 'INACTIVO' || x.pag).sort((a, b) => String(a.a.nombre).localeCompare(b.a.nombre));
+  const ahora = new Date(), sello = `Publicado desde el Sistema de Suministros el ${flong(today())} a las ${ahora.toTimeString().slice(0, 5)}${c.nota ? ' · ' + c.nota : ''}`;
+  const C = datosCajaPub(c), out = [];
+  const T = k => r2(ec.reduce((s, x) => s + num(x[k]), 0));
+  if (c.tabs.resumen) {
+    const g = C.ord.filter(r => num(r.haber)).reduce((s, r) => s + num(r.haber), 0);
+    const rows = [['CAFETINES Y LOCALES', ''], ['Arrendatarios', ec.length], ['Esperado a la fecha', T('esp')], ['Pagado', T('pag')], ['Saldo vencido (a la fecha)', T('saldo')], ['Por vencer (resto de contratos)', T('porVencer')],
+      ['', ''], ['CAJA CHICA', ''], ['Fondo asignado', num(CFG.caja.fondo)], ['Caja actual', 'C' + C.actual], ['Saldo actual', num(C.saldo)], [`Gastos documentados ${Store.year}`, r2(g)]];
+    out.push({ key: 'resumen', name: 'Resumen', title: `RESUMEN ${Store.year} · ${CFG.inst.nombre}`, subtitle: sello, headers: ['Concepto', 'Valor'], rows: rows.map(r => [r[0], typeof r[1] === 'number' && !/Arrendatarios/.test(r[0]) ? r2(r[1]) : r[1]]),
+      fmt: ['', 'money'], widths: [320, 160], bold: [0, 7], moneyRows: true });
+    out[out.length - 1].fmt = ['', ''];
+    out[out.length - 1].rows = rows.map(r => [r[0], typeof r[1] === 'number' && !/Arrendatarios/.test(r[0]) ? money(r[1]) : r[1]]);
+  }
+  if (c.tabs.cafetines) {
+    const M = MESES_CAP.map(m => m.slice(0, 3)); const bg = [], fc = [];
+    const rows = ec.map(x => { const a = x.a, b = ['', '', ''], f = ['', '', ''];
+      const ms = Array.from({ length: 12 }, (_, i) => { const m = i + 1, v = x.meses[i], cu = num(a.cuota), due = m >= x.desde && m <= x.hasta, fut = m > x.hasta && m >= x.desde && m <= x.hastaC;
+        if (v + 0.004 >= cu && v) { b.push('#d9f2e3'); f.push('#1e7b45'); return '✓'; } if (v) { b.push('#fff4d6'); f.push('#a66b00'); return 'abono ' + money(v); }
+        if (due) { b.push('#fde2e1'); f.push('#c62828'); return '✗'; } if (fut) { b.push('#f1f3f6'); f.push('#8a94a6'); return '○'; } b.push(''); f.push('#c0c6d0'); return ''; });
+      b.push('', '', '', ''); f.push('', '#1e7b45', x.saldo > 0.004 ? '#c62828' : '#1e7b45', ''); bg.push(b); fc.push(f);
+      return [a.nombre, [a.espacio, a.categoria].filter(Boolean).join(' · '), r2(num(a.cuota)), ...ms, r2(x.esp), r2(x.pag), r2(x.saldo), r2(x.porVencer)]; });
+    rows.push(['TOTAL', '', '', ...Array(12).fill(''), T('esp'), T('pag'), T('saldo'), T('porVencer')]); bg.push([]); fc.push([]);
+    out.push({ key: 'cafetines', name: 'Cafetines', title: `ESTADO DE CUENTA DE CAFETINES Y LOCALES · ${Store.year}`, subtitle: sello + ' · ✓ pagado · ✗ pendiente · ○ por vencer', headers: ['Arrendatario', 'Local', 'Cuota', ...M, 'Esperado a la fecha', 'Pagado', 'Saldo vencido', 'Por vencer'],
+      rows, bg, fc, fmt: ['', '', 'money', ...Array(12).fill('center'), 'money', 'money', 'money', 'money'], widths: [230, 150, 80, ...Array(12).fill(44), 110, 100, 100, 90], bold: [rows.length - 1] });
+  }
+  if (c.tabs.pagos) {
+    const rows = []; ec.forEach(x => x.lista.forEach(pg => rows.push([x.a.nombre, String(pg.recibo || ''), cap(String(pg.mes || '').toLowerCase()), fdate(pg.fecha_banco), fdate(pg.fecha), r2(num(pg.cantidad)), String(pg.comprobante || ''), c.ocultarNotas ? '' : String(pg.obs || '')])));
+    rows.push(['TOTAL', '', '', '', '', r2(rows.reduce((s, r) => s + num(r[5]), 0)), '', '']);
+    out.push({ key: 'pagos', name: 'Pagos de cafetines', title: `PAGOS DE ARRENDAMIENTO · ${Store.year}`, subtitle: sello, headers: ['Arrendatario', 'N° recibo', 'Mes que cancela', 'Fecha en banco', 'Fecha de recibido', 'Cantidad', 'N° de comprobante', 'Observaciones'],
+      rows, fmt: ['', 'text', '', 'center', 'center', 'money', 'text', ''], widths: [240, 90, 120, 110, 120, 100, 140, 220], bold: [rows.length - 1] });
+  }
+  if (c.tabs.caja) {
+    const rows = C.sel.map(r => [cv(r, 'caja'), fdate(r.fecha), r.tipo || '', r.categoria || '', r.comprobante || '', String(r.documento || ''), r.concepto || '', r.proveedor || '', num(r.debe) ? r2(num(r.debe)) : '', num(r.haber) ? r2(num(r.haber)) : '', r2(cv(r, 'saldo')), c.ocultarNotas ? '' : r.notas || '']);
+    rows.push(['TOTAL', '', '', '', '', '', '', '', r2(C.sel.reduce((s, r) => s + num(r.debe), 0)), r2(C.sel.reduce((s, r) => s + num(r.haber), 0)), C.sel.length ? r2(cv(C.sel[C.sel.length - 1], 'saldo')) : '', '']);
+    const alc = c.cajaAlcance === 'actual' ? 'Caja actual C' + C.actual : c.cajaAlcance === 'desde' && c.cajaDesde ? 'Desde ' + fdate(c.cajaDesde) : 'Todo el año ' + Store.year;
+    out.push({ key: 'caja', name: 'Caja chica', title: `REGISTRO DE CAJA CHICA · FONDO ${money(CFG.caja.fondo)}`, subtitle: `${sello} · ${alc} · saldo actual ${money(C.saldo)}`, color: '#385723', light: '#e2efd9',
+      headers: ['Caja', 'Fecha', 'Tipo', 'Categoría', 'Comprobante', 'N° documento', 'Concepto', 'Proveedor / nombre', 'Debe (+)', 'Haber (−)', 'Saldo', 'Notas'],
+      rows, fmt: ['center', 'center', '', '', '', 'text', '', '', 'money', 'money', 'money', ''], widths: [55, 85, 110, 130, 115, 140, 260, 200, 85, 85, 90, 180], bold: [rows.length - 1] });
+  }
+  if (c.tabs.cajares) {
+    const g = {}; C.ord.forEach(r => { const k = cv(r, 'cajaN'); const x = g[k] || (g[k] = { n: k, desde: r.fecha, hasta: r.fecha, gastos: 0, cant: 0, debe: 0, saldo: 0 }); if (toYMD(r.fecha) < toYMD(x.desde)) x.desde = r.fecha; if (toYMD(r.fecha) > toYMD(x.hasta)) x.hasta = r.fecha; if (num(r.haber)) { x.gastos += num(r.haber); x.cant++; } x.debe += num(r.debe); x.saldo = cv(r, 'saldo'); });
+    const rows = Object.values(g).map(x => ['C' + x.n, fdate(x.desde), fdate(x.hasta), x.cant, r2(x.debe), r2(x.gastos), r2(x.saldo), x.n === C.actual ? 'EN USO' : 'Cerrada']);
+    out.push({ key: 'cajares', name: 'Caja chica · resumen', title: `RESUMEN DE CAJAS CHICAS · ${Store.year}`, subtitle: sello, color: '#385723', light: '#e2efd9', headers: ['Caja', 'Desde', 'Hasta', 'N° de gastos', 'Ingresos / reposición', 'Gastos', 'Saldo final', 'Estado'],
+      rows, fmt: ['center', 'center', 'center', 'num', 'money', 'money', 'money', 'center'], widths: [70, 100, 100, 100, 150, 120, 120, 100] });
+  }
+  return out;
+}
+function pubPdfPage(k, c) {
+  if (k === 'caf') { const filas = Object.values(estadoCuentaArr()).filter(x => x.a.estado !== 'INACTIVO' || x.pag).sort((a, b) => String(a.a.nombre).localeCompare(b.a.nombre)); return estadoArrImpreso(filas, ''); }
+  const C = datosCajaPub(k === 'ccAct' ? Object.assign({}, c, { cajaAlcance: 'actual' }) : Object.assign({}, c, { cajaAlcance: 'todo' }));
+  const sel = C.sel, g = r2(sel.reduce((s, r) => s + num(r.haber), 0));
+  return `<div class="page land">${membrete()}<div class="ptitle">${k === 'ccAct' ? 'REGISTRO DE CAJA CHICA · CAJA C' + C.actual : 'REGISTRO ANUAL DE CAJA CHICA · ' + Store.year}</div><div class="psub">Al ${flong(today())} · Fondo asignado ${money(CFG.caja.fondo)}</div>
+    <div class="pkpi"><div><small>Registros</small><b>${sel.length}</b></div><div><small>Gastos documentados</small><b>${money(g)}</b></div><div><small>Saldo actual</small><b>${money(C.saldo)}</b></div></div>
+    ${ptable(['Caja', 'Fecha', 'Categoría', 'Comprobante', 'N° doc.', 'Concepto', 'Proveedor', 'Debe', 'Haber', 'Saldo'], sel.map(r => `<tr><td class="c">${esc(cv(r, 'caja'))}</td><td class="c">${fdate(r.fecha)}</td><td>${esc(r.categoria || '')}</td><td>${esc(r.comprobante || '')}</td><td>${esc(r.documento || '')}</td><td>${esc(r.concepto || '')}</td><td>${esc(r.proveedor || '')}</td><td class="r">${num(r.debe) ? money(r.debe) : ''}</td><td class="r">${num(r.haber) ? money(r.haber) : ''}</td><td class="r">${money(cv(r, 'saldo'))}</td></tr>`).concat([`<tr class="tot"><td colspan="7">TOTAL</td><td class="r">${money(sel.reduce((s, r) => s + num(r.debe), 0))}</td><td class="r">${money(g)}</td><td class="r">${money(C.saldo)}</td></tr>`]))}
+    ${firmasDoc('reembolso')}</div>`;
+}
+function tablaPrevia(t) {
+  const n = t.headers.length;
+  return `<div class="pub-prev"><div class="pub-t" style="background:${t.color || '#1f3864'}">${esc(t.title)}</div><div class="pub-s" style="background:${t.light || '#ddebf7'};color:${t.color || '#1f3864'}">${esc(t.subtitle)}</div>
+    <div class="tw" style="max-height:420px"><table class="t pub-tb"><thead><tr>${t.headers.map(h => `<th style="background:${t.color || '#1f3864'}">${esc(h)}</th>`).join('')}</tr></thead><tbody>
+    ${t.rows.map((r, i) => `<tr${(t.bold || []).includes(i) ? ' class="pub-b"' : ''}>${Array.from({ length: n }, (_, j) => { const v = r[j], f = (t.fmt || [])[j]; const bg = t.bg && t.bg[i] && t.bg[i][j], fc = t.fc && t.fc[i] && t.fc[i][j];
+      return `<td style="${bg ? 'background:' + bg + ';' : ''}${fc ? 'color:' + fc + ';' : ''}${f === 'money' || f === 'num' ? 'text-align:right;' : f === 'center' ? 'text-align:center;' : ''}">${v === '' || v === undefined ? '' : f === 'money' && typeof v === 'number' ? money(v) : esc(String(v))}</td>`; }).join('')}</tr>`).join('') || `<tr><td colspan="${n}" class="muted">Sin datos</td></tr>`}</tbody></table></div></div>`;
+}
+defView('pub:panel', 'Publicar en Drive compartido', el => {
+  const c = pubCfg(); let ver = LS.get('pubVer', 'cafetines');
+  const guardar = () => saveCfg(true);
+  const draw = () => {
+    const tabs = pubTabsSpec(c); if (!tabs.find(t => t.key === ver) && tabs[0]) ver = tabs[0].key;
+    const nombre = c.nombre.replace('{año}', Store.year);
+    const pdfsSel = PUB_PDFS.filter(([k]) => c.pdfs[k]);
+    el.innerHTML = `<div class="alert info" style="margin-top:0">📤 Aquí arma lo que verán todos en el drive compartido. <b>Nada se publica solo</b>: revise la vista previa y pulse <b>Publicar ahora</b>. El link de la hoja no cambia entre publicaciones.</div>
+    <div class="grid g2">
+      <div class="card"><h3>1. Carpeta compartida</h3>
+        <div class="form"><label class="f wide"><span>Link de la carpeta en Drive</span><input class="in" id="pF" value="${esc(c.folder ? 'https://drive.google.com/drive/folders/' + c.folder : '')}" placeholder="https://drive.google.com/drive/folders/…"></label></div>
+        <div class="bar" style="margin:8px 0 0"><button class="btn sm" id="pChk">🔎 Comprobar acceso</button><span class="muted" style="font-size:12.5px">${c.folderNombre ? '✔ ' + esc(c.folderNombre) : 'Su cuenta debe tener permiso de Editor en esa carpeta.'}</span></div>
+        <div class="form" style="margin-top:10px"><label class="f wide"><span>Nombre de la hoja de Google</span><input class="in" id="pN" value="${esc(c.nombre)}"></label>
+        <label class="f wide"><span>Nota que aparece en el encabezado (opcional)</span><input class="in" id="pNota" value="${esc(c.nota)}" placeholder="Ej.: Datos al cierre de octubre"></label></div>
+        ${c.sheetUrl ? `<p style="margin:8px 0 0;font-size:13px">Hoja publicada: <a href="${esc(c.sheetUrl)}" target="_blank">${esc(nombre)} ↗</a></p>` : ''}</div>
+      <div class="card"><h3>2. Qué se publica</h3>
+        <div style="font-size:12.5px;font-weight:700;margin-bottom:4px">Pestañas de la hoja de Google</div>
+        <div class="chips">${PUB_TABS.map(([k, l]) => `<label class="chip ${c.tabs[k] ? 'on' : ''}"><input type="checkbox" data-tab="${k}" ${c.tabs[k] ? 'checked' : ''} style="display:none">${c.tabs[k] ? '✓ ' : ''}${l}</label>`).join('')}</div>
+        <div style="font-size:12.5px;font-weight:700;margin:10px 0 4px">PDF (mismo diseño de los reportes)</div>
+        <div class="chips">${PUB_PDFS.map(([k, l]) => `<label class="chip ${c.pdfs[k] ? 'on' : ''}"><input type="checkbox" data-pdf="${k}" ${c.pdfs[k] ? 'checked' : ''} style="display:none">${c.pdfs[k] ? '✓ ' : ''}${l}</label>`).join('')}</div>
+        <div class="form" style="margin-top:10px"><label class="f"><span>Caja chica: qué registros</span><select class="in" id="pCA"><option value="todo" ${c.cajaAlcance === 'todo' ? 'selected' : ''}>Todo el año</option><option value="actual" ${c.cajaAlcance === 'actual' ? 'selected' : ''}>Solo la caja actual</option><option value="desde" ${c.cajaAlcance === 'desde' ? 'selected' : ''}>Desde una fecha</option></select></label>
+        <label class="f" ${c.cajaAlcance === 'desde' ? '' : 'style="display:none"'}><span>Desde</span><input class="in" type="date" id="pCD" value="${esc(c.cajaDesde)}"></label></div>
+        <label class="chk"><input type="checkbox" id="pON" ${c.ocultarNotas ? 'checked' : ''}> Ocultar notas y observaciones internas</label>
+        <label class="chk"><input type="checkbox" id="pH" ${c.historial ? 'checked' : ''}> Guardar copia de los PDF en Historial (carpeta del mes)</label></div></div>
+    <div class="card"><div class="bar" style="margin:0 0 8px"><h3 style="margin:0">3. Vista previa</h3><span class="muted" style="font-size:12.5px">así se verá cada pestaña</span><span class="sp"></span>${pdfsSel.map(([k, l]) => `<button class="btn sm" data-vpdf="${k}">👁 ${esc(l)}.pdf</button>`).join('')}</div>
+      <div class="chips" style="margin-bottom:8px">${tabs.map(t => `<span class="chip ${t.key === ver ? 'on' : ''}" data-ver="${t.key}">${esc(t.name)} <small class="muted">(${t.rows.length})</small></span>`).join('') || '<span class="muted">Elija al menos una pestaña.</span>'}</div>
+      ${tabs.find(t => t.key === ver) ? tablaPrevia(tabs.find(t => t.key === ver)) : ''}</div>
+    <div class="card"><div class="bar" style="margin:0"><div><b>4. Publicar</b><div class="muted" style="font-size:12.5px">${tabs.length} pestaña(s) y ${pdfsSel.length} PDF a la carpeta ${c.folderNombre ? '“' + esc(c.folderNombre) + '”' : '(sin configurar)'}</div></div><span class="sp"></span><button class="btn pri" id="pPub" ${c.folder ? '' : 'disabled'}>📤 Publicar ahora</button></div>
+      ${c.log.length ? `<table class="t" style="margin-top:10px"><thead><tr><th>Fecha</th><th>Publicado</th><th>Archivos</th></tr></thead><tbody>${c.log.slice(0, 8).map(l => `<tr><td>${esc(l.f)}</td><td>${esc(l.que)}</td><td>${l.sheetUrl ? `<a href="${esc(l.sheetUrl)}" target="_blank">Hoja ↗</a> ` : ''}${(l.files || []).map(f => `<a href="${esc(f.url)}" target="_blank">${esc(f.name)}</a>`).join(' · ')}</td></tr>`).join('')}</tbody></table>` : ''}</div>`;
+    /* La vista previa se reduce para que quepa completa (sin barras a los lados) */
+    const tw = $('.pub-prev .tw', el), tb = tw && $('table', tw); if (tb) { tb.style.zoom = ''; const k = tw.clientWidth / tb.scrollWidth; if (k < 1) tb.style.zoom = Math.max(0.55, k - 0.01); }
+    $('#pF', el).onchange = e => { const id = idCarpeta(e.target.value); if (e.target.value && !id) { toast('No reconozco ese link de carpeta', 'bad'); return; } if (id !== c.folder) { c.folder = id; c.folderNombre = ''; } guardar(); draw(); };
+    $('#pN', el).onchange = e => { c.nombre = e.target.value.trim() || 'Publicado'; guardar(); };
+    $('#pNota', el).onchange = e => { c.nota = e.target.value.trim(); guardar(); draw(); };
+    $$('[data-tab]', el).forEach(i => i.onchange = () => { c.tabs[i.dataset.tab] = i.checked ? 1 : 0; guardar(); draw(); });
+    $$('[data-pdf]', el).forEach(i => i.onchange = () => { c.pdfs[i.dataset.pdf] = i.checked ? 1 : 0; guardar(); draw(); });
+    $('#pCA', el).onchange = e => { c.cajaAlcance = e.target.value; guardar(); draw(); };
+    const cd = $('#pCD', el); if (cd) cd.onchange = e => { c.cajaDesde = e.target.value; guardar(); draw(); };
+    $('#pON', el).onchange = e => { c.ocultarNotas = e.target.checked; guardar(); draw(); };
+    $('#pH', el).onchange = e => { c.historial = e.target.checked; guardar(); };
+    $$('[data-ver]', el).forEach(ch => ch.onclick = () => { ver = ch.dataset.ver; LS.set('pubVer', ver); draw(); });
+    $$('[data-vpdf]', el).forEach(b => b.onclick = () => Print.show((PUB_PDFS.find(x => x[0] === b.dataset.vpdf) || [])[1], pubPdfPage(b.dataset.vpdf, c)));
+    $('#pChk', el).onclick = async () => { if (!c.folder) return toast('Pegue primero el link de la carpeta', 'bad');
+      try { const r = await Sync.call({ action: 'pubCheck', folderId: c.folder }); c.folderNombre = r.nombre; guardar(); toast('Acceso correcto ✔ · ' + r.nombre, 'ok'); draw(); }
+      catch (e) { toast('No se pudo escribir en la carpeta: ' + (e.message || e) + '. Revise que tenga permiso de Editor (y que Code.gs esté actualizado).', 'bad', 9000); } };
+    $('#pPub', el).onclick = async () => {
+      if (!tabs.length && !pdfsSel.length) return toast('No hay nada seleccionado para publicar', 'bad');
+      if (!(await confirmBox(`<b>Se publicará en “${esc(c.folderNombre || 'la carpeta')}” y lo verán todos los que tienen acceso:</b><ul style="margin:8px 0 0;padding-left:18px">${tabs.map(t => `<li>Pestaña <b>${esc(t.name)}</b> (${t.rows.length} filas)</li>`).join('')}${pdfsSel.map(([, l]) => `<li>PDF <b>${esc(l)}</b> (reemplaza el anterior)</li>`).join('')}</ul><p style="margin:10px 0 0">¿Publicar ahora?</p>`, '📤 Publicar'))) return;
+      const t = toast('Preparando PDF…', '', 300000);
+      try {
+        const pdfs = []; for (const [k, l] of pdfsSel) { t.innerHTML = `Preparando ${esc(l)}.pdf…`; pdfs.push({ name: l, pdf: await htmlAPdfB64(pubPdfPage(k, c)) }); }
+        t.innerHTML = 'Publicando en Drive…';
+        const r = await Sync.call({ action: 'publicar', folderId: c.folder, sheetId: c.sheetId, sheetName: nombre, tabs: tabs.map(x => ({ name: x.name, title: x.title, subtitle: x.subtitle, headers: x.headers, rows: x.rows, fmt: x.fmt, bg: x.bg, fc: x.fc, widths: x.widths, bold: x.bold, color: x.color, light: x.light })), pdfs, historial: c.historial, mes: today().slice(0, 7), fecha: today() });
+        c.sheetId = r.sheetId; c.sheetUrl = r.sheetUrl;
+        c.log.unshift({ f: `${fdate(today())} ${new Date().toTimeString().slice(0, 5)}`, que: [...tabs.map(x => x.name), ...pdfsSel.map(([, l]) => l + '.pdf')].join(', '), sheetUrl: r.sheetUrl, files: r.files }); c.log = c.log.slice(0, 20);
+        await saveCfg(true); t.remove(); toast('Publicado ✔', 'ok'); draw();
+      } catch (e) { t.remove(); toast('No se pudo publicar: ' + (e.message || e), 'bad', 9000); }
+    };
+  };
+  draw();
+});
 </script>
