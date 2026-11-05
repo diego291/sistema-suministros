@@ -363,7 +363,7 @@ function openRecibo(row, done, pre) {
   const info = () => {
     const n = norm($('#r_nombre').value), nie = $('#r_nie').value.trim(); if (!n && !nie) { $('#r_info').innerHTML = ''; return; }
     const prev = Store.all('recibos').filter(x => x._id !== row._id && !isTrue(x.nulo) && ((nie && String(x.nie) === nie) || norm(x.nombre) === n));
-    const ok = Store.all('estudiantes').some(e => norm(e.nombre) === n || (nie && String(e.nie) === nie));
+    const ok = Store.all('estudiantes').some(e => norm(e.nombre) === n || (nie && String(e.nie) === nie)) || nombresConocidos().has(n);
     const meses = r2(prev.reduce((s, x) => s + mesesAlimDe(x), 0)); const req = mesesRequeridos(today()); const dmx = detalleMeses(meses);
     $('#r_info').innerHTML = (ok ? '' : `<div class="alert warn" style="margin:0 0 6px">⚠ Este nombre no está en la base de estudiantes (se registrará igual).</div>`) +
       (prev.length ? `<div class="alert info" style="margin:0">Pagos previos este año: <b>${prev.length}</b> recibo(s) · ${money(prev.reduce((s, x) => s + num(x.pago), 0))} · alimentos: <b>${nfmt(meses)}</b> de ${req} mes(es)${meses + 0.001 < req ? ` <span class="bad-t">(faltan ${nfmt(req - meses)}: ${esc(listaMeses(dmx.pen))})</span>` : ' ✔'} · último: ${fdate(prev.map(x => x.fecha).sort().pop())} · ${esc(prev.slice(-3).map(x => x.concepto).join(' | '))}</div>` : '');
@@ -418,19 +418,50 @@ function openRecibo(row, done, pre) {
     const e = estActual(), g = $('#r_grado').value, sc = $('#r_seccion').value, op = $('#r_opcion').value;
     if (!abierto) {
       if (!$('#r_nombre').value.trim()) { c.innerHTML = ''; return; }
+      const otro = !e && nombresConocidos().get(norm($('#r_nombre').value));
+      if (otro || (!e && $('#r_tipo').value !== 'Estudiante')) {
+        const pg = Store.all('pagadores').find(x => norm(x.nombre) === norm($('#r_nombre').value));
+        const h = `<div class="est-chip">👤 <span>${otro ? esc(otro) + (pg && pg.vinculo ? ' · ' + esc(pg.vinculo) : '') : esc($('#r_tipo').value) + ' <small class="muted">(no registrado)</small>'}</span><button type="button" class="btn sm" id="r_estE" title="${otro ? 'Cambiar' : 'Registrar a esta persona'}">✏️</button></div>`;
+        if (c.dataset.h === h) return; c.dataset.h = h; c.innerHTML = h; $('#r_estE').onclick = () => pintaEst(true); return;
+      }
       const txt = [g, sc ? 'Sección ' + sc : '', op].filter(Boolean).join(' · ') || '<span class="muted">sin grado ni sección</span>';
       const h = `<div class="est-chip">🎓 <span>${txt.includes('<span') ? txt : esc(txt)}</span>${e ? '' : ' <small class="muted">(no está en la base)</small>'}<button type="button" class="btn sm" id="r_estE" title="${e ? 'Editar estudiante en la base de datos' : 'Asignar grado y sección'}">✏️</button></div>`;
       if (c.dataset.h === h) return; c.dataset.h = h; c.innerHTML = h;
       $('#r_estE').onclick = () => pintaEst(true); return;
     }
     const sel = (id, arr, v) => `<select class="in" id="${id}"><option></option>${arr.map(o => `<option ${o === v ? 'selected' : ''}>${esc(o)}</option>`).join('')}${v && !arr.includes(v) ? `<option selected>${esc(v)}</option>` : ''}</select>`;
-    c.dataset.h = ''; c.innerHTML = `<div class="est-edit"><b>${e ? '✏️ Editar estudiante (se guarda en la base y en todos sus recibos)' : '✏️ Grado y sección de este recibo'}</b>
-      <div class="form" style="margin-top:8px">${e ? `<label class="f wide"><span>Nombre</span><input class="in" id="ee_nombre" value="${esc(e.nombre)}"></label><label class="f"><span>NIE</span><input class="in" id="ee_nie" value="${esc(e.nie || '')}"></label>` : ''}
+    const tipoIni = !e ? (nombresConocidos().get(norm($('#r_nombre').value)) || ($('#r_tipo').value === 'Estudiante' ? 'Estudiante' : (TIPOS_PAGADOR.find(t => t === $('#r_tipo').value) || 'Externo'))) : 'Estudiante';
+    const arrs = Store.all('arrendatarios');
+    c.dataset.h = ''; c.innerHTML = `<div class="est-edit"><b>${e ? '✏️ Editar estudiante (se guarda en la base y en todos sus recibos)' : '✏️ ¿Quién paga este recibo?'}</b>
+      ${e ? '' : `<div class="chips" id="ee_tipo" style="margin-top:8px">${['Estudiante', ...TIPOS_PAGADOR].map(t => `<span class="chip ${t === tipoIni ? 'on' : ''}" data-t="${t}">${t}</span>`).join('')}</div>
+      <div class="form" id="ee_otro" style="margin-top:8px;${tipoIni === 'Estudiante' ? 'display:none' : ''}">
+        <label class="f" id="ee_vw"><span>Vínculo (ej. mamá de…, proveedor)</span><input class="in" id="ee_vinc"></label>
+        <label class="f" id="ee_aw" style="display:none"><span>Cafetín / arrendatario</span><select class="in" id="ee_arr">${arrs.map(a => `<option value="${a._id}">${esc(a.espacio ? a.espacio + ' · ' : '')}${esc(a.nombre)}</option>`).join('')}</select></label>
+        <label class="f"><span>Teléfono</span><input class="in" id="ee_tel"></label>
+        <label class="chk" style="grid-column:1/-1"><input type="checkbox" id="ee_reg" checked> Guardar en la base (Otros pagadores / encargadas del cafetín) para no volver a escribirlo</label></div>`}
+      <div class="form" id="ee_est" style="margin-top:8px;${!e && tipoIni !== 'Estudiante' ? 'display:none' : ''}">${e ? `<label class="f wide"><span>Nombre</span><input class="in" id="ee_nombre" value="${esc(e.nombre)}"></label><label class="f"><span>NIE</span><input class="in" id="ee_nie" value="${esc(e.nie || '')}"></label>` : ''}
         <label class="f"><span>Grado</span>${sel('ee_grado', gradosList(), e ? e.grado : g)}</label><label class="f"><span>Sección</span>${sel('ee_seccion', lista('secciones'), e ? e.seccion : sc)}</label><label class="f"><span>Opción</span>${sel('ee_opcion', lista('opciones'), e ? e.opcion : op)}</label></div>
       ${e ? '' : `<label class="chk" style="margin-top:6px"><input type="checkbox" id="ee_add" ${$('#r_tipo').value === 'Estudiante' ? 'checked' : ''}> Agregar a la base de estudiantes</label>`}
       <div class="bar" style="margin-top:8px"><span class="sp"></span><button type="button" class="btn sm" id="ee_c">Cancelar</button><button type="button" class="btn sm pri" id="ee_s">💾 ${e ? 'Guardar en la base y en sus recibos' : 'Aplicar'}</button></div></div>`;
     $('#ee_c').onclick = () => pintaEst(false);
+    const tSel = () => { const x = $('#ee_tipo .chip.on'); return x ? x.dataset.t : 'Estudiante'; };
+    const pintaTipo = () => { const t = tSel(); if (!$('#ee_otro')) return; $('#ee_otro').style.display = t === 'Estudiante' ? 'none' : ''; $('#ee_est').style.display = t === 'Estudiante' ? '' : 'none'; const ad = $('#ee_add'); if (ad) ad.closest('label').style.display = t === 'Estudiante' ? '' : 'none';
+      $('#ee_aw').style.display = t === 'Encargada de cafetín' ? '' : 'none'; $('#ee_vw').style.display = t === 'Encargada de cafetín' ? 'none' : ''; };
+    $$('#ee_tipo .chip').forEach(ch => ch.onclick = () => { $$('#ee_tipo .chip').forEach(x => x.classList.remove('on')); ch.classList.add('on'); pintaTipo(); });
+    pintaTipo();
     $('#ee_s').onclick = async () => {
+      const t = e ? 'Estudiante' : tSel();
+      if (t !== 'Estudiante') {
+        const nom = $('#r_nombre').value.trim(); if (!nom) return toast('Escriba el nombre', 'bad');
+        if ($('#ee_reg').checked) {
+          if (t === 'Encargada de cafetín') { const a = Store.get('arrendatarios', $('#ee_arr').value); if (a) { const ls = String(a.encargados || '').split('\n').map(x => x.trim()).filter(Boolean); if (!ls.some(x => norm(x) === norm(nom))) ls.push(nom); await Store.save('arrendatarios', Object.assign({}, a, { encargados: ls.join('\n') })); } }
+          else if (!Store.all('pagadores').some(x => norm(x.nombre) === norm(nom))) await Store.save('pagadores', { nombre: nom, tipo: t, vinculo: $('#ee_vinc').value.trim(), telefono: $('#ee_tel').value.trim() });
+          toast(`${nom} quedó registrado como ${t} ✔`, 'ok');
+        }
+        setSel('#r_tipo', tipoReciboDe(t)); setSel('#r_grado', ''); setSel('#r_seccion', ''); setSel('#r_opcion', ''); row.est_id = '';
+        c.dataset.h = ''; pintaEst(false); info(); refresh(); return;
+      }
+      if (!e && $('#r_tipo').value !== 'Estudiante') setSel('#r_tipo', 'Estudiante');
       const v = { grado: $('#ee_grado').value, seccion: $('#ee_seccion').value, opcion: $('#ee_opcion').value };
       if (e) {
         v.nombre = $('#ee_nombre').value.trim() || e.nombre; v.nie = $('#ee_nie').value.trim();
@@ -453,7 +484,8 @@ function openRecibo(row, done, pre) {
     if (e.target.id === 'r_pago') pagoAuto = false;
     refresh();
   });
-  $('#r_nombre').addEventListener('change', () => { pintaEst(false); info(); }); $('#r_nie').addEventListener('change', () => {
+  $('#r_nombre').addEventListener('change', () => { const k = nombresConocidos().get(norm($('#r_nombre').value)); if (k && $('#r_tipo').value === 'Estudiante' && !estActual()) setSel('#r_tipo', tipoReciboDe(k)); pintaEst(false); info(); });
+  $('#r_tipo').addEventListener('change', () => { $('#r_estc').dataset.h = ''; pintaEst(false); }); $('#r_nie').addEventListener('change', () => {
     const nie = $('#r_nie').value.trim(); const e = nie && Store.all('estudiantes').find(x => String(x.nie) === nie);
     if (e) { $('#r_nombre').value = e.nombre; setSel('#r_grado', e.grado); setSel('#r_seccion', e.seccion); setSel('#r_opcion', e.opcion); row.est_id = e._id; }
     pintaEst(false); info();
