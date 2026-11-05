@@ -680,19 +680,23 @@ function estadoCuentaArr() {
 }
 
 /* ---------- CONSTANCIA DE SOLVENCIA (y finalización de contrato) de arrendatarios ---------- */
-function dlgSolvencia(x) {
-  const a = x.a, solvente = x.saldo <= 0.004 && x.porVencer <= 0.004;
-  const finC = dobj(a.fin), terminado = finC && toYMD(a.fin) <= today();
-  const pendTxt = [...x.pend, ...x.fut].map(m => MESES[m - 1]).join(', ');
-  modal(`📄 Constancia de solvencia · ${esc(a.nombre)}`, `${solvente ? `<div class="alert ok" style="margin-top:0">✔ Tiene pagado todo su contrato de ${Store.year}: ${money(x.pag)}.</div>` : `<div class="alert warn" style="margin-top:0">⚠ No está solvente: falta ${money(x.saldo + x.porVencer)} (${esc(pendTxt)}). La carta saldrá como <b>constancia de estado de pagos</b> indicando lo pendiente.</div>`}
-    <div class="form"><label class="f"><span>Fecha de la constancia</span><input class="in" type="date" id="svF" value="${today()}"></label>
-    <label class="f"><span>Fecha de entrega del local (opcional)</span><input class="in" type="date" id="svE"></label>
-    <label class="chk" style="grid-column:1/-1"><input type="checkbox" id="svFin" ${terminado || (solvente && finC) ? 'checked' : ''}> Incluir <b>finalización del contrato</b>${finC ? ` (termina el ${flong(a.fin)})` : ''}</label>
-    <label class="chk" style="grid-column:1/-1"><input type="checkbox" id="svDet" checked> Incluir el detalle de pagos (mes, fecha, recibo y monto)</label>
-    <label class="f wide"><span>Observaciones (opcional)</span><textarea class="in" id="svO" rows="2" placeholder="Ej.: El local se entregó limpio y con las llaves."></textarea></label></div>`,
-    [{ l: 'Cancelar' }, { l: '🖨️ Generar constancia', pri: 1, fn: () => { const o = { fecha: $('#svF').value || today(), entrega: $('#svE').value, fin: $('#svFin').checked, det: $('#svDet').checked, obs: $('#svO').value.trim() }; setTimeout(() => Print.show('Constancia de solvencia - ' + a.nombre, paginaSolvencia(x, o)), 30); } }]);
+/** Limpia el texto editado: solo deja párrafos, negrita, cursiva, subrayado y saltos de línea */
+function htmlSimple(h) {
+  const d = document.createElement('div'); d.innerHTML = h;
+  const limpia = n => Array.from(n.childNodes).map(c => {
+    if (c.nodeType === 3) return esc(c.textContent);
+    if (c.nodeType !== 1) return '';
+    const t = c.tagName.toLowerCase(), adentro = limpia(c);
+    if (t === 'br') return '<br>';
+    if (t === 'b' || t === 'strong') return `<b>${adentro}</b>`;
+    if (t === 'i' || t === 'em') return `<i>${adentro}</i>`;
+    if (t === 'u') return `<u>${adentro}</u>`;
+    if (t === 'p' || t === 'div') return adentro.trim() ? `<p>${adentro}</p>` : '';
+    return adentro;
+  }).join('');
+  const r = limpia(d).trim(); return /^<p>/.test(r) ? r : `<p>${r}</p>`;
 }
-function paginaSolvencia(x, o) {
+function textosSolvencia(x, o) {
   const a = x.a, I = CFG.inst, solvente = x.saldo <= 0.004 && x.porVencer <= 0.004;
   const d = dobj(o.fecha) || new Date(), mesesTxt = x.desde <= x.hastaC ? `${MESES[x.desde - 1]} a ${MESES[x.hastaC - 1]} de ${Store.year}` : `${Store.year}`;
   const quien = `<b>${esc(String(a.nombre).toUpperCase())}</b>${a.dui ? `, con Documento Único de Identidad número <b>${esc(a.dui)}</b>` : ''}`;
@@ -705,10 +709,44 @@ function paginaSolvencia(x, o) {
   const p2 = o.fin ? (solvente ? `Asimismo, se hace constar que el contrato de arrendamiento ${dobj(a.fin) && toYMD(a.fin) <= toYMD(o.fecha) ? 'finalizó' : 'finaliza'}${a.fin ? ' el ' + flong(a.fin) : ''}${o.entrega ? `, que el local fue entregado a esta institución el ${flong(o.entrega)}` : ''} y que no quedan obligaciones económicas pendientes por parte del arrendatario(a).`
     : `El contrato de arrendamiento ${a.fin ? 'finaliza el ' + flong(a.fin) : 'se encuentra en proceso de finalización'}; para extender la constancia de solvencia y cierre del contrato deberá cancelar el saldo pendiente.`) : '';
   const p3 = `Y para los usos que se estime conveniente, se extiende la presente en ${esc(I.lugar || 'San Salvador')}, a los ${d.getDate()} días del mes de ${MESES[d.getMonth()]} de ${d.getFullYear()}.`;
+  const titulo = solvente ? (o.fin ? 'CONSTANCIA DE SOLVENCIA Y FINALIZACIÓN DE CONTRATO' : 'CONSTANCIA DE SOLVENCIA') : 'CONSTANCIA DE ESTADO DE PAGOS';
+  return { titulo, antes: `<p>${p1}</p>${p2 ? `<p>${p2}</p>` : ''}`, despues: `<p>${p3}</p>` };
+}
+function dlgSolvencia(x) {
+  const a = x.a, solvente = x.saldo <= 0.004 && x.porVencer <= 0.004;
+  const finC = dobj(a.fin), terminado = finC && toYMD(a.fin) <= today();
+  const pendTxt = [...x.pend, ...x.fut].map(m => MESES[m - 1]).join(', ');
+  const k = 'solvTxt_' + a._id, g = LS.get(k, null);
+  let editado = !!g;
+  modal(`📄 Constancia de solvencia · ${esc(a.nombre)}`, `${solvente ? `<div class="alert ok" style="margin-top:0">✔ Tiene pagado todo su contrato de ${Store.year}: ${money(x.pag)}.</div>` : `<div class="alert warn" style="margin-top:0">⚠ No está solvente: falta ${money(x.saldo + x.porVencer)} (${esc(pendTxt)}). La carta saldrá como <b>constancia de estado de pagos</b> indicando lo pendiente.</div>`}
+    <div class="form"><label class="f"><span>Fecha de la constancia</span><input class="in" type="date" id="svF" value="${today()}"></label>
+    <label class="f"><span>Fecha de entrega del local (opcional)</span><input class="in" type="date" id="svE"></label>
+    <label class="chk" style="grid-column:1/-1"><input type="checkbox" id="svFin" ${terminado || (solvente && finC) ? 'checked' : ''}> Incluir <b>finalización del contrato</b>${finC ? ` (termina el ${flong(a.fin)})` : ''}</label>
+    <label class="chk" style="grid-column:1/-1"><input type="checkbox" id="svDet" checked> Incluir el detalle de pagos (mes, fecha, recibo y monto)</label></div>
+    <div class="bar" style="margin:12px 0 4px"><b>✏️ Texto de la constancia</b><span class="muted" style="font-size:12px">· haga clic y escriba para cambiarlo (Ctrl+B = negrita)</span><span class="sp"></span><button type="button" class="btn sm" id="svR" title="Volver al texto generado por el sistema">↺ Texto original</button></div>
+    <label class="f"><span>Título</span><input class="in" id="svT"></label>
+    <div class="in" id="svA" contenteditable="true" style="border:1px solid var(--ln);border-radius:8px;padding:10px 12px;background:var(--bg);min-height:120px;line-height:1.55;text-align:justify;white-space:normal;margin-top:6px"></div>
+    <div class="muted" style="font-size:12px;margin:6px 0 2px">(aquí va el detalle de pagos, si está marcado)</div>
+    <div class="in" id="svB" contenteditable="true" style="border:1px solid var(--ln);border-radius:8px;padding:10px 12px;background:var(--bg);min-height:44px;line-height:1.55;white-space:normal"></div>
+    <label class="f wide" style="margin-top:8px"><span>Observaciones (opcional)</span><textarea class="in" id="svO" rows="2" placeholder="Ej.: El local se entregó limpio y con las llaves.">${esc((g && g.obs) || '')}</textarea></label>`,
+    [{ l: 'Cancelar' }, { l: '🖨️ Generar constancia', pri: 1, fn: () => {
+      const o = leer(); const t = { titulo: $('#svT').value.trim(), antes: htmlSimple($('#svA').innerHTML), despues: htmlSimple($('#svB').innerHTML) };
+      LS.set(k, editado ? Object.assign({ obs: o.obs }, t) : (o.obs ? { obs: o.obs } : null));
+      setTimeout(() => Print.show('Constancia de solvencia - ' + a.nombre, paginaSolvencia(x, o, t)), 30);
+    } }], { lg: true });
+  const leer = () => ({ fecha: $('#svF').value || today(), entrega: $('#svE').value, fin: $('#svFin').checked, det: $('#svDet').checked, obs: $('#svO').value.trim() });
+  const llenar = (forzar) => { if (editado && !forzar) return; const t = textosSolvencia(x, leer()); $('#svT').value = t.titulo; $('#svA').innerHTML = t.antes; $('#svB').innerHTML = t.despues; };
+  if (g && g.antes) { $('#svT').value = g.titulo || ''; $('#svA').innerHTML = g.antes; $('#svB').innerHTML = g.despues || ''; } else llenar(true);
+  ['#svF', '#svE', '#svFin'].forEach(id => $(id).addEventListener('change', () => llenar(false)));
+  ['#svT', '#svA', '#svB'].forEach(id => $(id).addEventListener('input', () => { editado = true; }));
+  $('#svR').onclick = () => { editado = false; LS.set(k, null); llenar(true); };
+}
+function paginaSolvencia(x, o, t) {
+  const a = x.a, I = CFG.inst; t = t || textosSolvencia(x, o);
   const det = o.det && x.lista.length ? `<div style="margin:10px 0 4px;font-weight:700;color:#1f3864">Detalle de pagos</div>${ptable(['Mes que cancela', 'Fecha de pago', 'Recibo', 'Comprobante', 'Monto'], x.lista.map(pg => `<tr><td>${esc(cap(String(pg.mes || '').toLowerCase()))}</td><td class="c">${fdate(pg.fecha)}</td><td class="c">${esc(pg.recibo || '')}</td><td class="c">${esc(pg.comprobante || pg.boleta || '')}</td><td class="r">${money(pg.cantidad)}</td></tr>`).concat([`<tr class="tot"><td colspan="4">TOTAL PAGADO</td><td class="r">${money(x.pag)}</td></tr>`]))}` : '';
   return `<div class="page">${membrete()}${pref('', `${I.lugar || 'San Salvador'}, ${flong(o.fecha)}`)}
-    <div class="ptitle" style="margin:6px 0 16px">${solvente ? (o.fin ? 'CONSTANCIA DE SOLVENCIA Y FINALIZACIÓN DE CONTRATO' : 'CONSTANCIA DE SOLVENCIA') : 'CONSTANCIA DE ESTADO DE PAGOS'}</div>
-    <div class="ptxt"><p>${p1}</p>${p2 ? `<p>${p2}</p>` : ''}${det}${o.obs ? `<p><b>Observaciones:</b> ${esc(o.obs)}</p>` : ''}<p style="margin-top:12px">${p3}</p></div>
+    <div class="ptitle" style="margin:6px 0 16px">${esc(t.titulo)}</div>
+    <div class="ptxt">${t.antes}${det}${o.obs ? `<p><b>Observaciones:</b> ${esc(o.obs)}</p>` : ''}<div style="margin-top:12px">${t.despues}</div></div>
     ${firmasDoc('solvencia')}</div>`;
 }
 defView('t:arrcuenta', 'Estado de cuenta de arrendatarios', (el, p) => {
