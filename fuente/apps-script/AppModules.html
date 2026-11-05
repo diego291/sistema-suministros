@@ -198,6 +198,48 @@ function estadoCtl(rb, prev, actual) {
   }
   return e;
 }
+/* ---------- Otros pagadores: personas que pagan y no son estudiantes ---------- */
+const TIPOS_PAGADOR = ['Padre/Madre', 'Docente', 'Personal', 'Externo', 'Encargada de cafetín'];
+defMod({ key: 'pagadores', label: 'Otros pagadores (padres, docentes, externos)', scope: 'g', fields: [
+  { k: 'nombre', l: 'Nombre completo', t: 'text', req: 1 }, { k: 'tipo', l: 'Tipo', t: 'select', o: () => TIPOS_PAGADOR, req: 1, def: 'Padre/Madre' },
+  { k: 'vinculo', l: 'Vínculo (ej. mamá de…, Cafetín 1, proveedor)', t: 'text' }, { k: 'dui', l: 'DUI', t: 'text' }, { k: 'telefono', l: 'Teléfono', t: 'text' },
+  { k: 'notas', l: 'Notas', t: 'textarea' }],
+  table: ['nombre', 'tipo', 'vinculo', 'telefono'], search: ['nombre', 'vinculo', 'dui'], sort: { k: 'nombre', dir: 1 }, carry: ['tipo'] });
+/** Nombres conocidos que no son estudiantes: otros pagadores, personal y encargados/arrendatarios */
+function nombresConocidos() {
+  const m = new Map();
+  Store.all('pagadores').forEach(p => m.set(norm(p.nombre), p.tipo || 'Externo'));
+  Store.all('personal').forEach(p => m.set(norm(p.nombre), 'Personal'));
+  Store.all('arrendatarios').forEach(a => { m.set(norm(a.nombre), 'Encargada de cafetín'); String(a.encargados || '').split(/\n|,|;/).map(x => x.trim()).filter(Boolean).forEach(x => m.set(norm(x), 'Encargada de cafetín')); });
+  return m;
+}
+/** Tipo de pagador del recibo según la lista de la configuración */
+const tipoReciboDe = t => { const l = lista('pagador'); if (l.includes(t)) return t; if (t === 'Encargada de cafetín') return l.find(x => /arrend|cafet/i.test(x)) || (l.includes('Externo') ? 'Externo' : t); return l.includes('Externo') ? 'Externo' : t; };
+/** Registrar a quien pagó (desde las alertas de control): lo agrega a la base que corresponde y corrige el tipo en sus recibos */
+function registrarPagador(nombre, done) {
+  const recs = Store.all('recibos').filter(r => norm(r.nombre) === norm(nombre));
+  const arrs = Store.all('arrendatarios');
+  modal(`➕ Registrar a “${esc(nombre)}”`, `<p class="muted" style="margin-top:0">Indique quién es. Desde ahora sus recibos ya no saldrán como “nombre no está en BD”.</p>
+    <div class="chips" id="rpT" style="margin-bottom:10px">${['Estudiante', ...TIPOS_PAGADOR].map((t, i) => `<span class="chip ${i === 1 ? 'on' : ''}" data-t="${t}">${t}</span>`).join('')}</div>
+    <div class="form"><label class="f"><span>Nombre</span><input class="in" id="rpN" value="${esc(nombre)}"></label>
+    <label class="f" id="rpVw"><span>Vínculo (ej. mamá de…, proveedor)</span><input class="in" id="rpV"></label>
+    <label class="f" id="rpAw" style="display:none"><span>Cafetín / arrendatario</span><select class="in" id="rpA">${arrs.map(a => `<option value="${a._id}">${esc(a.espacio ? a.espacio + ' · ' : '')}${esc(a.nombre)}</option>`).join('')}</select></label>
+    <label class="f"><span>Teléfono</span><input class="in" id="rpTel"></label></div>
+    <label class="chk" style="margin-top:8px"><input type="checkbox" id="rpR" checked> Poner este tipo de pagador en sus ${recs.length} recibo(s)</label>
+    <p class="muted" id="rpE" style="display:none;font-size:12.5px">Para un estudiante se abre su ficha en la base de estudiantes (con grado y sección).</p>`,
+    [{ l: 'Cancelar' }, { l: '✔ Registrar', pri: 1, fn: async () => {
+      const t = $('#rpT .chip.on').dataset.t, nom = $('#rpN').value.trim(); if (!nom) { toast('Escriba el nombre', 'bad'); return false; }
+      if (t === 'Estudiante') { setTimeout(() => openForm('estudiantes', { nombre: nom }, done), 50); return true; }
+      if (t === 'Encargada de cafetín') { const a = Store.get('arrendatarios', $('#rpA').value); if (!a) { toast('Elija el cafetín', 'bad'); return false; }
+        const ls = String(a.encargados || '').split('\n').map(x => x.trim()).filter(Boolean); if (!ls.some(x => norm(x) === norm(nom))) ls.push(nom); await Store.save('arrendatarios', Object.assign({}, a, { encargados: ls.join('\n') })); }
+      else await Store.save('pagadores', { nombre: nom, tipo: t, vinculo: $('#rpV').value.trim(), telefono: $('#rpTel').value.trim() });
+      if ($('#rpR').checked && recs.length) await Store.saveMany('recibos', recs.map(r => Object.assign({}, r, { tipo: tipoReciboDe(t) })));
+      toast('Registrado ✔', 'ok'); done && done(); return true;
+    } }]);
+  $$('#rpT .chip').forEach(c => c.onclick = () => { $$('#rpT .chip').forEach(x => x.classList.remove('on')); c.classList.add('on'); const t = c.dataset.t;
+    $('#rpAw').style.display = t === 'Encargada de cafetín' ? '' : 'none'; $('#rpVw').style.display = t === 'Encargada de cafetín' || t === 'Estudiante' ? 'none' : ''; $('#rpE').style.display = t === 'Estudiante' ? '' : 'none';
+    if (t === 'Encargada de cafetín') { const g = arrs.find(a => /cafet/i.test(String(recs.map(r => r.concepto).join(' ')))); if (g) $('#rpA').value = g._id; } });
+}
 /* ---------- Recibo anterior y control de secuencia (panel del formulario de recibos) ---------- */
 function resumenRecAnterior(serie, n, selfId) {
   const rs = Store.all('recibos').filter(r => (r.serie || '') === (serie || '') && r._id !== selfId);
@@ -499,6 +541,7 @@ defMod({ key: 'arrendatarios', label: 'Arrendatarios (cafetines y locales)', sco
   { k: 'dia_pago', l: 'Día límite de pago', t: 'number' }, { k: 'forma', l: 'Forma de pago', t: 'select', o: ['Depósito en banco', 'Efectivo', 'Transferencia'] },
   { k: 'estado', l: 'Estado', t: 'select', o: ['ACTIVO', 'INACTIVO'], def: 'ACTIVO', badge: v => v === 'ACTIVO' ? 'ok' : 'bad' },
   { k: 'dui', l: 'DUI', t: 'text' }, { k: 'telefono', l: 'Teléfono', t: 'text' },
+  { k: 'encargados', l: 'Encargadas/os que pagan (uno por línea)', t: 'textarea', help: 'así sus recibos no salen como “nombre no registrado”' },
   { k: 'saldo', l: 'Saldo vencido (a la fecha)', t: 'calc', fn: r => money(cv(r, 'saldo')) }, { k: 'por_vencer', l: 'Por vencer (resto del contrato)', t: 'calc', fn: r => { const v = cv(r, 'porVencer'); return v ? money(v) + (cv(r, 'fut') ? ' · ' + cv(r, 'fut') : '') : '—'; } }, { k: 'notas', l: 'Acuerdos / notas', t: 'textarea', rows: 3 }],
   table: ['nombre', 'categoria', 'espacio', 'cuota', 'estado', 'saldo', 'por_vencer', 'telefono'], filters: ['categoria', 'estado'], sort: { k: 'nombre', dir: 1 },
   prepare: rows => { const ec = estadoCuentaArr(); rows.forEach(r => { const x = ec[r._id] || {}; CALC.set(r, { saldo: x.saldo || 0, porVencer: x.porVencer || 0, fut: (x.fut || []).map(m => cap(MESES[m - 1]).slice(0, 3)).join(', ') }); }); },
@@ -880,7 +923,7 @@ defMod({ key: 'documentos', label: 'Documentos emitidos', fields: [
 
 /* ======================= MENÚ (desplegable) ======================= */
 defMenu('Inicio', '🏠', [{ l: 'Panel principal', v: 'home' }, { l: 'Calendario', v: 'a:cal' }, { l: 'Agenda de actividades', v: 'm:agenda', mod: 'agenda' }, { l: 'Tareas pendientes', v: 'a:pend' }]);
-defMenu('Ingresos', '💰', [{ l: 'Recibos de ingreso', v: 'm:recibos', mod: 'recibos' }, { l: 'Control de digitación', v: 'r:control' }, { l: 'Estudiantes', v: 'm:estudiantes', mod: 'estudiantes' }]);
+defMenu('Ingresos', '💰', [{ l: 'Recibos de ingreso', v: 'm:recibos', mod: 'recibos' }, { l: 'Control de digitación', v: 'r:control' }, { l: 'Estudiantes', v: 'm:estudiantes', mod: 'estudiantes' }, { l: 'Otros pagadores (padres, docentes, externos)', v: 'm:pagadores', mod: 'pagadores' }]);
 defMenu('Reportes de cobro', '📊', [{ l: 'Por grado y sección', v: 'r:grado' }, { l: 'Por rubro (pagaron / pendientes)', v: 'r:rubro' }, { l: 'Resumen por secciones', v: 'r:secciones' }, { l: 'Ingresos por mes', v: 'r:mes' }, { l: 'Constancia de pagos', v: 'r:constancia' }, { l: 'Rendición de cuentas (anual)', v: 'r:rendicion' }]);
 defMenu('Tesorería', '🏦', [{ l: 'Ingresos y cuadre', v: 't:cuadre' }, { l: 'Arqueo de caja', v: 't:arqueo' }, { l: 'Historial de arqueos', v: 'm:arqueos', mod: 'arqueos' }, { l: 'Depósitos / remesas', v: 'm:depositos', mod: 'depositos' }, { l: 'Pagos de arrendamiento', v: 'm:cafetines', mod: 'cafetines' }, { l: 'Arrendatarios', v: 'm:arrendatarios', mod: 'arrendatarios' }, { l: 'Estado de cuenta de arrendatarios', v: 't:arrcuenta' }, { l: 'Donaciones económicas', v: 'm:donaciones', mod: 'donaciones' }, { l: 'Devoluciones', v: 'm:devoluciones', mod: 'devoluciones' }, { l: 'Dinero no remesado', v: 'm:noremesado', mod: 'noremesado' }, { l: 'Cuentas bancarias', v: 'm:cuentas_banco', mod: 'cuentas_banco' }, { l: 'Libro de banco', v: 'm:banco', mod: 'banco' }]);
 defMenu('Caja chica', '💵', [{ l: 'Panel de caja chica', v: 'c:panel' }, { l: 'Registro de caja chica', v: 'm:cajachica', mod: 'cajachica' }, { l: 'Solicitud de reembolso', v: 'c:reembolso' }, { l: 'Recibo (sin factura)', v: 'c:recibo' }, { l: 'Arqueo de caja chica', v: 'c:arqueo' }, { l: 'Directorio de proveedores', v: 'm:proveedores', mod: 'proveedores' }]);

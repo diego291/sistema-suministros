@@ -65,14 +65,14 @@ function controlRecibos(serie) {
   });
   const ks = Object.keys(series).sort();
   const min = ks.length === 1 ? series[ks[0]].min : 0, max = ks.length === 1 ? series[ks[0]].max : 0;
-  const ests = Store.all('estudiantes'); const nomSet = new Set(ests.map(e => norm(e.nombre))), nieSet = new Set(ests.map(e => String(e.nie || '').trim()).filter(Boolean)), idSet = new Set(ests.map(e => e._id));
+  const ests = Store.all('estudiantes'); const otros = nombresConocidos(); const nomSet = new Set(ests.map(e => norm(e.nombre))), nieSet = new Set(ests.map(e => String(e.nie || '').trim()).filter(Boolean)), idSet = new Set(ests.map(e => e._id));
   const alertas = [];
   const t = today();
   all.forEach(r => {
     if (isTrue(r.nulo)) return;
     const suma = rubrosOn().reduce((s, rb) => s + num(r['r_' + rb.k]), 0);
     const a = [];
-    if ((r.tipo === 'Estudiante' || !r.tipo) && (!r.grado || gradosList().includes(r.grado))) if (!idSet.has(r.est_id) && !nieSet.has(String(r.nie || '').trim()) && !nomSet.has(norm(r.nombre))) a.push('NOMBRE NO ESTÁ EN BD');
+    if ((r.tipo === 'Estudiante' || !r.tipo) && (!r.grado || gradosList().includes(r.grado))) if (!idSet.has(r.est_id) && !nieSet.has(String(r.nie || '').trim()) && !nomSet.has(norm(r.nombre)) && !otros.has(norm(r.nombre))) a.push('NOMBRE NO ESTÁ EN BD');
     if (num(r.pago) && !suma) a.push('INGRESO SIN DESGLOSE POR RUBRO');
     else if (Math.abs(num(r.pago) - suma) > 0.004) a.push(num(r.pago) < suma ? 'PAGO MENOR QUE RUBROS' : 'PAGO MAYOR QUE RUBROS');
     if (toYMD(r.fecha) > t) a.push('FECHA FUTURA');
@@ -101,12 +101,13 @@ defView('r:control', 'Control de digitación de recibos', el => {
     ${c.repetidos.length ? `<div class="alert bad"><b>N° repetidos (${c.repetidos.length}):</b> ${c.repetidos.slice(0, 200).join(', ')}${c.repetidos.length > 200 ? '…' : ''}${(duplicadosExactos().recibos || []).length ? `<div style="margin-top:8px"><b>${duplicadosExactos().recibos.length} son copias idénticas</b> (mismo nombre, fecha, concepto y montos). <button class="btn sm" id="cDup">🧹 Eliminar copias idénticas</button></div>` : ''}</div>` : ''}
     ${c.talonarios.length ? `<div class="alert info"><b>Saltos grandes de numeración</b> (cambio de talonario o número mal digitado): ${c.talonarios.join(' · ')}</div>` : ''}
     <div class="card"><h3>Lista de alertas <small>(${c.alertas.length}) · clic para corregir</small></h3>
-    ${c.alertas.length ? `<div class="tw"><table class="t"><thead><tr><th>N° recibo</th><th>Fecha</th><th>Nombre</th><th>Grado</th><th>Concepto</th><th class="r">Pago</th><th class="r">Suma rubros</th><th class="r">Diferencia</th><th>Alerta</th></tr></thead><tbody>
-    ${c.alertas.sort((a, b) => String(a.r.serie || '').localeCompare(b.r.serie || '') || num(a.r.numero) - num(b.r.numero)).map(x => `<tr data-id="${x.r._id}" style="cursor:pointer"><td>${MOD.recibos.rowIcon(x.r)}${recNum(x.r)}</td><td>${fdate(x.r.fecha)}</td><td>${esc(x.r.nombre)}</td><td>${esc((x.r.grado || '') + ' ' + (x.r.seccion || ''))}</td><td>${esc(x.r.concepto)}</td><td class="num">${money(x.r.pago)}</td><td class="num">${money(x.suma)}</td><td class="num">${money(num(x.r.pago) - x.suma)}</td><td><span class="tag warn">${esc(x.a)}</span></td></tr>`).join('')}</tbody></table></div>` : '<div class="alert ok">✔ Sin alertas.</div>'}</div>`;
+    ${c.alertas.length ? `<div class="tw"><table class="t"><thead><tr><th>N° recibo</th><th>Fecha</th><th>Nombre</th><th>Grado</th><th>Concepto</th><th class="r">Pago</th><th class="r">Suma rubros</th><th class="r">Diferencia</th><th>Alerta</th><th></th></tr></thead><tbody>
+    ${c.alertas.sort((a, b) => String(a.r.serie || '').localeCompare(b.r.serie || '') || num(a.r.numero) - num(b.r.numero)).map(x => `<tr data-id="${x.r._id}" style="cursor:pointer"><td>${MOD.recibos.rowIcon(x.r)}${recNum(x.r)}</td><td>${fdate(x.r.fecha)}</td><td>${esc(x.r.nombre)}</td><td>${esc((x.r.grado || '') + ' ' + (x.r.seccion || ''))}</td><td>${esc(x.r.concepto)}</td><td class="num">${money(x.r.pago)}</td><td class="num">${money(x.suma)}</td><td class="num">${money(num(x.r.pago) - x.suma)}</td><td><span class="tag warn">${esc(x.a)}</span></td><td>${/NOMBRE NO EST/.test(x.a) ? `<button class="btn sm" data-reg="${esc(x.r.nombre)}" title="Registrar como padre/madre, docente, externo, encargada de cafetín o estudiante">➕ Registrar</button>` : ''}</td></tr>`).join('')}</tbody></table></div>` : '<div class="alert ok">✔ Sin alertas.</div>'}</div>`;
     $$('[data-se]', el).forEach(ch => ch.onclick = () => { serie = ch.dataset.se; LS.set('ctrlSerie', serie); draw(); });
     $('#cNew', el).onclick = () => openRecibo(null, draw);
     const cd = $('#cDup', el); if (cd) cd.onclick = async () => { const d = duplicadosExactos().recibos; if (!(await confirmBox(`Se eliminarán ${d.length} recibo(s) duplicado(s) idénticos; se conserva uno de cada uno.`, 'Eliminar'))) return; await Store.saveMany('recibos', d.map(x => Object.assign({}, x, { _del: 1 }))); toast(`✔ ${d.length} duplicado(s) eliminado(s)`, 'ok'); draw(); };
     $$('tr[data-id]', el).forEach(tr => tr.onclick = () => openRecibo(Store.get('recibos', tr.dataset.id), draw));
+    $$('[data-reg]', el).forEach(b => b.onclick = e => { e.stopPropagation(); registrarPagador(b.dataset.reg, draw); });
     $('#cPr', el).onclick = () => Print.show('Control de digitación', `<div class="page">${membrete()}<div class="ptitle">CONTROL DE DIGITACIÓN DE RECIBOS</div><div class="psub">Al ${flong(today())}</div>
       <div class="pkpi"><div><small>Digitados${serie ? ' · Serie ' + esc(serie) : ''}</small><b>${c.all.length}</b></div><div><small>Primer / último</small><b style="font-size:11px">${rango}</b></div><div><small>Saltados</small><b>${c.saltados.length}</b></div><div><small>Repetidos</small><b>${c.repetidos.length}</b></div><div><small>Anulados</small><b>${c.nulos}</b></div><div><small>Acumulado</small><b>${money(v.reduce((s, r) => s + num(r.pago), 0))}</b></div></div>
       ${c.saltados.length ? `<p class="pnote"><b>Saltados:</b> ${c.saltados.join(', ')}</p>` : ''}${c.repetidos.length ? `<p class="pnote"><b>Repetidos:</b> ${c.repetidos.join(', ')}</p>` : ''}
