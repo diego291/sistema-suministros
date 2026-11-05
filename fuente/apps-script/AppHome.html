@@ -680,7 +680,15 @@ const CALCU = {
     });
     $$('[data-k]', B).forEach(i => i.oninput = i.onchange = () => { st[i.dataset.k] = i.value; CALCU.save(); if (i.dataset.k === 'cdebe') pintaTot(); });
     const lineas = () => DENOM.filter(([l]) => num(st.ccnt[l])).map(([l, v]) => [l, st.cexp[l] && esOp(st.cexp[l]) ? `${st.cexp[l]} = ${nfmt(st.ccnt[l])}` : nfmt(st.ccnt[l]), num(st.ccnt[l]) * v]);
-    $('[data-c=clr]', B).onclick = async () => { if (CALCU.totD() && !(await confirmBox('¿Borrar el conteo, el título y la nota?', 'Limpiar'))) return; st.ccnt = {}; st.cexp = {}; st.cde = ''; st.cnota = ''; st.cdebe = ''; CALCU.save(); CALCU.tabD(B); };
+    /* Limpiar: la confirmación se hace dentro de la misma calculadora (sin ventana aparte que quede detrás) */
+    const limpiar = () => { st.ccnt = {}; st.cexp = {}; st.cde = ''; st.cnota = ''; st.cdebe = ''; CALCU.save(); CALCU.tabD(B); const f = $('[data-dd]', B); f && f.focus(); };
+    $('[data-c=clr]', B).onclick = e => {
+      if (!CALCU.totD() && !st.cde && !st.cnota) return limpiar();
+      const bt = $('.cd-bt', B), prevH = bt.innerHTML;
+      bt.innerHTML = `<span class="bad-t" style="font-weight:700;font-size:13px">¿Borrar el conteo, el título y la nota?</span><span class="sp"></span><button class="btn sm" data-x="no">No</button><button class="btn sm pri" data-x="si" style="background:var(--bad);border-color:var(--bad)">Sí, borrar</button>`;
+      $('[data-x=si]', bt).onclick = limpiar; $('[data-x=no]', bt).onclick = () => CALCU.tabD(B);
+      $('[data-x=no]', bt).focus();
+    };
     $('[data-c=copy]', B).onclick = () => { navigator.clipboard && navigator.clipboard.writeText(CALCU.totD().toFixed(2)); toast('Total copiado'); };
     $('[data-c=print]', B).onclick = () => { const t = CALCU.totD(), d = st.cdebe === '' ? null : r2(t - num(st.cdebe));
       Print.show('Conteo de dinero', `<div class="page">${membrete()}<div class="ptitle">CONTEO DE DINERO${st.cde ? ' · ' + esc(st.cde).toUpperCase() : ''}</div><div class="psub">${flong(today())} · ${new Date().toTimeString().slice(0, 5)}</div>
