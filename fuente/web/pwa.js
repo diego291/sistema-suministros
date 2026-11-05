@@ -17,29 +17,37 @@
     reg.addEventListener('updatefound', function () { revisar(reg.installing); });
     setInterval(function () { reg.update(); }, 30 * 60 * 1000);
   });
-  /* Aviso en la esquina superior derecha cuando se instaló una versión nueva, con lo que cambió */
-  function avisoActualizado() {
+  /* Botón "Novedades" junto al título: muestra las últimas actualizaciones para leerlas con calma.
+     Si hay mejoras que no ha visto, el botón muestra cuántas; al abrirlo se marcan como vistas. */
+  function novedades() {
     fetch('version.json', { cache: 'no-store' }).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
-      if (!d || !d.v) return;
-      var ant = null; try { ant = JSON.parse(localStorage.getItem('verVista') || 'null'); } catch (e) { }
-      try { localStorage.setItem('verVista', JSON.stringify({ v: d.v, h: d.cambios && d.cambios[0] ? d.cambios[0].h : '' })); } catch (e) { }
-      if (!ant || ant.v === d.v) return;
-      var nuevos = []; (d.cambios || []).some(function (c) { if (c.h === ant.h) return true; nuevos.push(c); return false; });
-      if (!nuevos.length && d.cambios && d.cambios[0]) nuevos = [d.cambios[0]];
+      if (!d || !d.cambios) return;
       var esc = function (t) { return String(t).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); };
-      var corto = function (t) { t = String(t); return t.length > 120 ? t.slice(0, 118) + '…' : t; };
-      var box = document.createElement('div'); box.id = 'avisoAct';
-      box.style.cssText = 'position:fixed;top:14px;right:14px;z-index:9999;max-width:380px;background:var(--card,#fff);color:var(--tx,#1d2433);border:1px solid var(--ok,#2e7d32);border-left:5px solid var(--ok,#2e7d32);border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.25);padding:11px 14px 11px 12px;font-size:13px;line-height:1.4;transition:opacity .4s,transform .4s;transform:translateY(-8px);opacity:0';
-      box.innerHTML = '<div style="display:flex;align-items:center;gap:8px"><b style="font-size:14px">✅ Sistema actualizado</b><span style="flex:1"></span><button type="button" aria-label="Cerrar" style="border:0;background:transparent;color:inherit;font-size:16px;cursor:pointer;line-height:1">✕</button></div>'
-        + '<ul style="margin:6px 0 0;padding-left:18px">' + nuevos.slice(0, 4).map(function (c) { return '<li title="' + esc(c.m) + '">' + esc(corto(c.m)) + '</li>'; }).join('') + '</ul>'
-        + (nuevos.length > 4 ? '<div style="opacity:.7;font-size:12px;margin-top:3px">y ' + (nuevos.length - 4) + ' mejora(s) más</div>' : '');
-      document.body.appendChild(box);
-      requestAnimationFrame(function () { box.style.opacity = '1'; box.style.transform = 'none'; });
-      var cerrar = function () { box.style.opacity = '0'; box.style.transform = 'translateY(-8px)'; setTimeout(function () { box.remove(); }, 450); };
-      box.querySelector('button').onclick = cerrar;
-      var t = setTimeout(cerrar, 15000); box.onmouseenter = function () { clearTimeout(t); }; box.onmouseleave = function () { t = setTimeout(cerrar, 6000); };
+      var visto = null; try { visto = localStorage.getItem('novVisto'); } catch (e) { }
+      if (!visto) { try { var a = JSON.parse(localStorage.getItem('verVista') || 'null'); visto = a && a.h; } catch (e) { } }
+      var nuevos = 0; if (visto) { for (var k = 0; k < d.cambios.length && d.cambios[k].h !== visto; k++) nuevos++; if (nuevos === d.cambios.length) nuevos = Math.min(nuevos, 5); }
+      var t = document.getElementById('title'); if (!t || document.getElementById('btnNov')) return;
+      var b = document.createElement('button'); b.id = 'btnNov'; b.type = 'button'; b.className = 'btn sm'; b.title = 'Últimas actualizaciones del sistema';
+      b.style.cssText = 'margin-left:10px;position:relative;white-space:nowrap';
+      var pinta = function () { b.innerHTML = '🆕 Novedades' + (nuevos ? ' <span style="position:absolute;top:-7px;right:-7px;background:#d32f2f;color:#fff;border-radius:10px;font-size:10.5px;font-weight:700;padding:1px 6px">' + nuevos + '</span>' : ''); };
+      pinta(); t.insertAdjacentElement('afterend', b);
+      var fmt = function (f) { var p = String(f).split('-'); return p.length === 3 ? p[2] + '/' + p[1] + '/' + p[0] : f; };
+      b.onclick = function (e) {
+        e.stopPropagation(); var ex = document.getElementById('novPan'); if (ex) { ex.remove(); return; }
+        var rc = b.getBoundingClientRect(), pan = document.createElement('div'); pan.id = 'novPan';
+        pan.style.cssText = 'position:fixed;z-index:9999;top:' + (rc.bottom + 8) + 'px;left:' + Math.max(8, Math.min(rc.left, window.innerWidth - 460)) + 'px;width:450px;max-width:calc(100vw - 16px);max-height:70vh;overflow:auto;background:var(--card,#fff);color:var(--tx,#1d2433);border:1px solid var(--ln,#ddd);border-radius:12px;box-shadow:0 14px 40px rgba(0,0,0,.35);padding:12px 14px;font-size:13px;line-height:1.45';
+        var dias = {}, orden = [];
+        d.cambios.forEach(function (c, i) { if (!dias[c.f]) { dias[c.f] = []; orden.push(c.f); } dias[c.f].push({ m: c.m, nuevo: i < nuevos }); });
+        pan.innerHTML = '<div style="display:flex;align-items:center;margin-bottom:6px"><b style="font-size:14.5px">🆕 Últimas actualizaciones</b><span style="flex:1"></span><button type="button" style="border:0;background:transparent;color:inherit;font-size:16px;cursor:pointer">✕</button></div>'
+          + orden.map(function (f) { return '<div style="font-size:11.5px;font-weight:700;color:var(--tx2,#666);margin:10px 0 4px;text-transform:uppercase;letter-spacing:.4px">' + fmt(f) + '</div><ul style="margin:0;padding-left:18px">' + dias[f].map(function (x) { return '<li style="margin-bottom:5px">' + (x.nuevo ? '<span style="background:#2e7d32;color:#fff;border-radius:8px;font-size:10px;font-weight:700;padding:0 6px;margin-right:5px">NUEVO</span>' : '') + esc(x.m) + '</li>'; }).join('') + '</ul>'; }).join('');
+        document.body.appendChild(pan);
+        pan.querySelector('button').onclick = function () { pan.remove(); };
+        setTimeout(function () { document.addEventListener('mousedown', function fuera(ev) { if (!pan.contains(ev.target) && ev.target !== b) { pan.remove(); document.removeEventListener('mousedown', fuera); } }); }, 0);
+        try { localStorage.setItem('novVisto', d.cambios[0] ? d.cambios[0].h : ''); } catch (e) { }
+        nuevos = 0; pinta();
+      };
     }).catch(function () { });
   }
-  if (document.readyState === 'complete') setTimeout(avisoActualizado, 1500); else window.addEventListener('load', function () { setTimeout(avisoActualizado, 1500); });
+  if (document.readyState === 'complete') setTimeout(novedades, 1200); else window.addEventListener('load', function () { setTimeout(novedades, 1200); });
   navigator.serviceWorker.addEventListener('controllerchange', function () { if (recargando) return; recargando = true; location.reload(); });
 })();
