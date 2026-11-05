@@ -62,6 +62,19 @@ sw = leer(os.path.join(WEB, 'sw.js')).replace('__VERSION__', version).replace('_
 open(os.path.join(OUT, 'sw.js'), 'w', encoding='utf-8').write(sw)
 open(os.path.join(OUT, '.nojekyll'), 'w').write('')
 
+# Lista de cambios para el aviso "Sistema actualizado" (últimos commits que tocaron la aplicación)
+import subprocess, datetime
+cambios = []
+try:
+    log = subprocess.run(['git', 'log', '-n', '30', '--format=%h%x1f%cI%x1f%s', '--', 'fuente/'], cwd=RAIZ, capture_output=True, text=True, timeout=20).stdout
+    for ln in log.strip().splitlines():
+        h, f, m = (ln.split('\x1f') + ['', '', ''])[:3]
+        if m.startswith('Revert') or m.startswith('Merge'): continue
+        cambios.append({'h': h, 'f': f[:10], 'm': m})
+except Exception as e:
+    print('Aviso: sin historial de cambios', e)
+json.dump({'v': version, 'fecha': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'cambios': cambios}, open(os.path.join(OUT, 'version.json'), 'w', encoding='utf-8'), ensure_ascii=False)
+
 # Seguridad: nada de datos personales ni claves en lo publicado
 prohibido = [r'window\.__SEED\s*=\s*\{', r'"rows":\s*\[\{"k":', r'"token":\s*"[0-9a-f]{32}"']
 for raiz, _, fs in os.walk(OUT):
