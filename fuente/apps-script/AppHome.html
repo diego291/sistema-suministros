@@ -541,7 +541,7 @@ function calcEval(txt) {
 }
 const fmtN = v => v === null || v === undefined || v === '' ? '' : (Math.round(v * 100) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const CALCU = {
-  st: Object.assign({ tab: 'calc', fija: false, x: null, y: null, bx: null, by: null, min: false, abierta: false, expr: '', tape: [], recA: '', cobro: [], recB: '', lineas: [''], recC: '' }, LS.get('calc', {})),
+  st: Object.assign({ tab: 'calc', fija: false, x: null, y: null, bx: null, by: null, min: false, abierta: false, expr: '', tape: [], recA: '', cobro: [], recB: '', lineas: [''], recC: '', ccnt: {}, cexp: {}, cde: '', cnota: '', cdebe: '', ccaja: 'GENERAL' }, LS.get('calc', {})),
   save() { const o = Object.assign({}, CALCU.st); LS.set('calc', o); },
   el() { let r = $('#calcRoot'); if (!r) { r = document.createElement('div'); r.id = 'calcRoot'; r.tabIndex = -1; document.body.appendChild(r); } return r; },
   boton() {
@@ -556,7 +556,7 @@ const CALCU = {
   cerrar() { CALCU.st.abierta = false; CALCU.st.min = false; CALCU.save(); const r = $('#calcRoot'); if (r) { r.className = ''; r.innerHTML = ''; } const bb = $('#calcBub'); if (bb) bb.remove(); $('#btnCalc') && $('#btnCalc').classList.remove('on'); },
   abrir() { CALCU.st.abierta = true; CALCU.st.min = false; CALCU.save(); const bb = $('#calcBub'); if (bb) bb.remove(); $('#btnCalc').classList.add('on'); CALCU.pintar(); setTimeout(() => CALCU.foco(), 30); },
   minimizar() { CALCU.st.min = true; CALCU.st.abierta = true; CALCU.save(); const r = $('#calcRoot'); r.className = ''; r.innerHTML = ''; $('#btnCalc').classList.remove('on'); CALCU.burbuja(); },
-  resultado() { const t = CALCU.st.tab; if (t === 'cobro') return CALCU.totB(); if (t === 'cuentas') return CALCU.totC(); const v = calcEval(CALCU.st.expr); return v === null ? (CALCU.st.tape.length ? CALCU.st.tape[CALCU.st.tape.length - 1].r : 0) : v; },
+  resultado() { const t = CALCU.st.tab; if (t === 'cobro') return CALCU.totB(); if (t === 'cuentas') return CALCU.totC(); if (t === 'conteo') return CALCU.totD(); const v = calcEval(CALCU.st.expr); return v === null ? (CALCU.st.tape.length ? CALCU.st.tape[CALCU.st.tape.length - 1].r : 0) : v; },
   burbuja() {
     let b = $('#calcBub'); if (!b) { b = document.createElement('div'); b.id = 'calcBub'; b.title = 'Abrir calculadora (arrastre para mover)'; document.body.appendChild(b); }
     b.innerHTML = `🧮<small>${fmtN(CALCU.resultado())}</small>`;
@@ -569,12 +569,12 @@ const CALCU = {
       const up = () => { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); const r2 = el.getBoundingClientRect(); if (mov) fin(r2.left, r2.top); else if (clic) clic(); };
       document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up); };
   },
-  foco() { const r = $('#calcRoot'); if (!r) return; const t = CALCU.st.tab; const i = t === 'calc' ? r : t === 'cobro' ? $('[data-q]:last-of-type', r) || r : $$('.calc-ln input', r).pop(); (i || r).focus(); },
+  foco() { const r = $('#calcRoot'); if (!r) return; const t = CALCU.st.tab; const i = t === 'calc' ? r : t === 'conteo' ? $('[data-dd]', r) : t === 'cobro' ? $('[data-q]:last-of-type', r) || r : $$('.calc-ln input', r).pop(); (i || r).focus(); },
   pintar() {
     const r = CALCU.el(), st = CALCU.st;
     r.className = 'calc ' + (st.fija ? 'calc-fija' : 'calc-desp');
     if (st.fija) { r.style.left = (st.x ?? Math.max(10, window.innerWidth - 600)) + 'px'; r.style.top = (st.y ?? 70) + 'px'; r.style.right = 'auto'; } else { r.style.left = ''; r.style.top = ''; r.style.right = ''; }
-    r.innerHTML = `<div class="calc-h"><span class="calc-tabs">${[['calc', '🧮 Calculadora'], ['cobro', '🧾 Cobro rápido'], ['cuentas', '✍️ Cuentas']].map(([k, l]) => `<span data-ct="${k}" class="${st.tab === k ? 'on' : ''}">${l}</span>`).join('')}</span><span class="sp"></span>
+    r.innerHTML = `<div class="calc-h"><span class="calc-tabs">${[['calc', '🧮 Calculadora'], ['cobro', '🧾 Cobro rápido'], ['cuentas', '✍️ Cuentas'], ['conteo', '💵 Conteo']].map(([k, l]) => `<span data-ct="${k}" class="${st.tab === k ? 'on' : ''}">${l}</span>`).join('')}</span><span class="sp"></span>
       <button class="iconbtn ${st.fija ? 'on' : ''}" data-a="pin" title="${st.fija ? 'Volver a desplegable' : 'Fijar como ventana flotante'}">📌</button><button class="iconbtn" data-a="min" title="Minimizar a burbuja">–</button><button class="iconbtn" data-a="x" title="Cerrar (Esc)">✕</button></div><div class="calc-b"></div>`;
     $$('[data-ct]', r).forEach(t => t.onclick = () => { st.tab = t.dataset.ct; CALCU.save(); CALCU.pintar(); CALCU.foco(); });
     $('[data-a=pin]', r).onclick = () => { st.fija = !st.fija; if (st.fija && st.x === null) { const rc = r.getBoundingClientRect(); st.x = rc.left; st.y = rc.top; } CALCU.save(); CALCU.pintar(); };
@@ -582,7 +582,7 @@ const CALCU = {
     $('[data-a=x]', r).onclick = () => CALCU.cerrar();
     if (st.fija) CALCU.arrastrar(r, $('.calc-h', r), (x, y) => { st.x = x; st.y = y; CALCU.save(); });
     r.onkeydown = e => { if (e.key === 'Escape') { e.stopPropagation(); st.fija ? CALCU.minimizar() : CALCU.cerrar(); } };
-    ({ calc: CALCU.tabA, cobro: CALCU.tabB, cuentas: CALCU.tabC }[st.tab])($('.calc-b', r));
+    ({ calc: CALCU.tabA, cobro: CALCU.tabB, cuentas: CALCU.tabC, conteo: CALCU.tabD }[st.tab] || CALCU.tabA)($('.calc-b', r));
   },
   /* --- Calculadora con cinta --- */
   tabA(B) {
@@ -648,6 +648,53 @@ const CALCU = {
       };
     };
     pint();
+  },
+  /* --- Conteo rápido de dinero (arqueo rápido) --- */
+  totD() { return r2(DENOM.reduce((a, [l, v]) => a + num(CALCU.st.ccnt[l]) * v, 0)); },
+  tabD(B) {
+    const st = CALCU.st; st.ccnt = st.ccnt || {}; st.cexp = st.cexp || {};
+    const ev = t => { const x = String(t || '').trim(); if (!x) return 0; const v = calcEval(x); return v === null ? NaN : v; };
+    const esOp = t => /[+\-*x×\/()]/i.test(String(t || '').replace(/^\s*-/, ''));
+    const BIL = DENOM.filter(([l]) => /^Billete/.test(l)), MON = DENOM.filter(([l]) => !/^Billete/.test(l));
+    const sub = arr => r2(arr.reduce((a, [l, v]) => a + num(st.ccnt[l]) * v, 0));
+    const fila = ([l, v], cls) => { const e = st.cexp[l] ?? (st.ccnt[l] ? String(st.ccnt[l]) : ''); const n = ev(e);
+      return `<tr><td style="width:66px"><span class="aq-d ${cls}">${esc(l.replace(/^(Billete|Moneda) /, ''))}</span></td><td><input class="in aq-in" data-dd="${esc(l)}" inputmode="decimal" autocomplete="off" value="${esc(e)}"></td><td class="aq-eq" style="width:54px">${esOp(e) && !isNaN(n) ? '= ' + nfmt(n) : isNaN(n) ? '¿?' : ''}</td><td class="num aq-sub" style="width:78px">${num(st.ccnt[l]) ? money(num(st.ccnt[l]) * v) : '<span class="muted">—</span>'}</td></tr>`; };
+    const SUG = ['Caja general', 'Caja chica', 'Actividad económica', 'Cafetín', 'Uniformes', 'Evento', 'Fondo de grado'];
+    const pintaTot = () => { const t = CALCU.totD(), d = st.cdebe === '' ? null : r2(t - num(st.cdebe));
+      $('[data-dt]', B).textContent = money(t); $('[data-db]', B).textContent = `Billetes ${money(sub(BIL))} · Monedas ${money(sub(MON))}`;
+      const df = $('[data-df]', B); df.textContent = d === null ? '' : Math.abs(d) < .01 ? '✔ Cuadra' : d > 0 ? 'Sobran ' + money(d) : 'Faltan ' + money(-d); df.className = d === null ? '' : Math.abs(d) < .01 ? 'ok-t' : 'bad-t'; };
+    B.innerHTML = `<div class="form" style="grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+        <label class="f"><span>¿De qué es este conteo?</span><input class="in" data-k="cde" list="cdeL" value="${esc(st.cde)}" placeholder="Ej.: Actividad económica, Cafetín…"><datalist id="cdeL">${SUG.map(x => `<option value="${x}">`).join('')}</datalist></label>
+        <label class="f"><span>Nota</span><input class="in" data-k="cnota" value="${esc(st.cnota)}" placeholder="Ej.: falta contar sobre de la mañana"></label></div>
+      <table class="t aq-t"><tbody>${BIL.map(d => fila(d, 'bil')).join('')}<tr><td colspan="4" style="height:4px;border:0"></td></tr>${MON.map(d => fila(d, 'mon')).join('')}</tbody></table>
+      <div class="calc-sum big" style="margin-top:6px"><span class="muted" data-db style="font-size:12px"></span><b data-dt></b></div>
+      <div class="calc-sum"><span>Debe haber <input class="in" data-k="cdebe" value="${esc(st.cdebe)}" placeholder="opcional" style="width:100px;text-align:right;margin-left:6px"></span><b data-df style="font-size:17px"></b></div>
+      <div class="bar" style="margin:8px 0 0;flex-wrap:wrap"><button class="btn sm" data-c="clr">🧹 Limpiar</button><button class="btn sm" data-c="copy">📋 Copiar total</button><button class="btn sm" data-c="print">🖨️ Imprimir conteo</button><span class="sp"></span><select class="in" data-k="ccaja" style="width:auto;padding:4px 6px" title="Arqueo al que se pasa"><option value="GENERAL" ${st.ccaja !== 'CAJA CHICA' ? 'selected' : ''}>Caja general</option><option value="CAJA CHICA" ${st.ccaja === 'CAJA CHICA' ? 'selected' : ''}>Caja chica</option></select><button class="btn sm pri" data-c="arq">➜ Pasar al arqueo</button></div>
+      <div class="muted" style="font-size:11.5px;margin-top:6px">Acepta operaciones: 40+40-5 · 4x40 · (20+16+1). Enter = siguiente. Se guarda solo.</div>`;
+    pintaTot();
+    const ins = $$('[data-dd]', B);
+    ins.forEach((i, k) => {
+      i.oninput = () => { const l = i.dataset.dd, v = ev(i.value), tr = i.closest('tr'), val = (DENOM.find(d => d[0] === l) || [])[1];
+        st.cexp[l] = i.value; st.ccnt[l] = isNaN(v) ? 0 : v; i.classList.toggle('bad', isNaN(v)); CALCU.save();
+        $('.aq-eq', tr).textContent = esOp(i.value) && !isNaN(v) ? '= ' + nfmt(v) : isNaN(v) ? '¿?' : '';
+        $('.aq-sub', tr).innerHTML = num(st.ccnt[l]) ? money(num(st.ccnt[l]) * val) : '<span class="muted">—</span>'; pintaTot(); };
+      i.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); const nx = ins[k + 1]; if (nx) { nx.focus(); nx.select(); } else $('[data-k=cdebe]', B).focus(); } };
+      i.onfocus = () => i.select();
+    });
+    $$('[data-k]', B).forEach(i => i.oninput = i.onchange = () => { st[i.dataset.k] = i.value; CALCU.save(); if (i.dataset.k === 'cdebe') pintaTot(); });
+    const lineas = () => DENOM.filter(([l]) => num(st.ccnt[l])).map(([l, v]) => [l, st.cexp[l] && esOp(st.cexp[l]) ? `${st.cexp[l]} = ${nfmt(st.ccnt[l])}` : nfmt(st.ccnt[l]), num(st.ccnt[l]) * v]);
+    $('[data-c=clr]', B).onclick = async () => { if (CALCU.totD() && !(await confirmBox('¿Borrar el conteo, el título y la nota?', 'Limpiar'))) return; st.ccnt = {}; st.cexp = {}; st.cde = ''; st.cnota = ''; st.cdebe = ''; CALCU.save(); CALCU.tabD(B); };
+    $('[data-c=copy]', B).onclick = () => { navigator.clipboard && navigator.clipboard.writeText(CALCU.totD().toFixed(2)); toast('Total copiado'); };
+    $('[data-c=print]', B).onclick = () => { const t = CALCU.totD(), d = st.cdebe === '' ? null : r2(t - num(st.cdebe));
+      Print.show('Conteo de dinero', `<div class="page">${membrete()}<div class="ptitle">CONTEO DE DINERO${st.cde ? ' · ' + esc(st.cde).toUpperCase() : ''}</div><div class="psub">${flong(today())} · ${new Date().toTimeString().slice(0, 5)}</div>
+        <div style="width:70%;margin:0 auto">${ptable(['Denominación', 'Cantidad', 'Subtotal'], lineas().map(([l, q, v]) => `<tr><td>${esc(l)}</td><td class="c">${esc(q)}</td><td class="r">${money(v)}</td></tr>`), { foot: `<tr class="tot"><td colspan="2">TOTAL CONTADO</td><td class="r">${money(t)}</td></tr>${d === null ? '' : `<tr><td colspan="2">Debe haber</td><td class="r">${money(st.cdebe)}</td></tr><tr class="tot"><td colspan="2">${Math.abs(d) < .01 ? 'CUADRA' : d > 0 ? 'SOBRANTE' : 'FALTANTE'}</td><td class="r">${money(Math.abs(d))}</td></tr>`}` })}
+        ${st.cnota ? `<p><b>Nota:</b> ${esc(st.cnota)}</p>` : ''}</div>${firmas([['', 'Contado por'], ['', 'Revisado por']])}</div>`); };
+    $('[data-c=arq]', B).onclick = () => {
+      const caja = st.ccaja === 'CAJA CHICA' ? 'CAJA CHICA' : 'GENERAL';
+      const notas = [st.cde ? 'Conteo: ' + st.cde : '', st.cnota].filter(Boolean).join(' · ');
+      LS.set('aqBorr_' + caja, { cnt: Object.assign({}, st.ccnt), exprs: Object.assign({}, st.cexp), notas, manual: null, fecha: today(), t: Date.now() });
+      if (!st.fija) CALCU.minimizar(); go(caja === 'CAJA CHICA' ? 'c:arqueo' : 't:arqueo', { caja }); toast('Conteo pasado al arqueo. Revise y pulse Guardar arqueo.', 'ok', 5000);
+    };
   },
   /* --- Cuentas en renglones --- */
   totC() { return r2(CALCU.st.lineas.reduce((a, t) => a + (calcEval(String(t).replace(/^[^:]*:/, '')) || 0), 0)); },
