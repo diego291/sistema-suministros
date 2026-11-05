@@ -904,6 +904,7 @@ document.addEventListener('click', e => {
 const PDF_BASE_CSS = 'body{margin:0;background:#fff;font-family:Arial,Helvetica,sans-serif;font-size:11.5px;color:#000}table{border-collapse:collapse}img{max-width:100%}.page{page-break-after:always}.page:last-child{page-break-after:auto}';
 const PDF_PROPS = ['color', 'background-color', 'font-size', 'font-weight', 'font-style', 'font-family', 'text-align', 'vertical-align', 'text-decoration-line', 'line-height', 'white-space', 'text-transform', 'letter-spacing',
   'border-top', 'border-right', 'border-bottom', 'border-left', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left', 'margin-top', 'margin-bottom', 'margin-left', 'margin-right'];
+const aHex = c => { const m = String(c).match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/); return m ? '#' + [m[1], m[2], m[3]].map(n => Number(n).toString(16).padStart(2, '0')).join('') : c; };
 function pdfSeguro(html) {
   const host = document.createElement('div'); host.style.cssText = 'position:absolute;left:-14000px;top:0;width:230mm;background:#fff'; host.innerHTML = html; document.body.appendChild(host);
   host.querySelectorAll('.page').forEach(pg => { if (pg.querySelector('.memb') && !pg.querySelector('.pfoot')) pg.insertAdjacentHTML('beforeend', pfoot()); });
@@ -926,21 +927,26 @@ function pdfSeguro(html) {
     const flex = /flex/.test(cs.display) && cs.flexDirection.indexOf('column') < 0;
     const hijos = flex ? Array.from(el.children).filter(c => getComputedStyle(c).display !== 'none') : [];
     const ancho = el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
-    info.push({ el, st: st.join(';'), flex, hijos: hijos.map(c => ({ c, w: ancho ? Math.max(1, Math.round(c.offsetWidth / ancho * 100)) : 0, va: cs.alignItems === 'flex-start' || cs.alignItems === 'start' ? 'top' : cs.alignItems === 'flex-end' || cs.alignItems === 'end' ? 'bottom' : 'middle' })), jc: cs.justifyContent });
+    const bg = cs.backgroundColor && !/rgba\(0, 0, 0, 0\)|transparent/.test(cs.backgroundColor) ? aHex(cs.backgroundColor) : '';
+    info.push({ el, bg, st: st.join(';'), flex, hijos: hijos.map(c => ({ c, w: ancho ? Math.max(1, Math.round(c.offsetWidth / ancho * 100)) : 0, va: cs.alignItems === 'flex-start' || cs.alignItems === 'start' ? 'top' : cs.alignItems === 'flex-end' || cs.alignItems === 'end' ? 'bottom' : 'middle' })), jc: cs.justifyContent });
   });
-  info.forEach(x => { if (x.quitar) return; x.el.removeAttribute('class'); x.el.setAttribute('style', x.st); });
+  info.forEach(x => { if (x.quitar) return; x.el.removeAttribute('class'); x.el.setAttribute('style', x.st); if (x.bg && /^(TD|TH|TABLE|TR)$/.test(x.el.tagName)) x.el.setAttribute('bgcolor', x.bg); });
   info.filter(x => x.quitar).forEach(x => x.el.remove());
   info.slice().reverse().forEach(x => {
     if (!x.flex || !x.hijos.length || !x.el.isConnected) return;
     const t = document.createElement('table'); t.setAttribute('cellspacing', '0'); t.setAttribute('cellpadding', '0'); t.setAttribute('width', '100%');
-    t.setAttribute('style', x.st + ';width:100%;border-collapse:collapse'); const tr = t.insertRow();
+    t.setAttribute('style', x.st + ';width:100%;border-collapse:collapse'); if (x.bg) t.setAttribute('bgcolor', x.bg); const tr = t.insertRow(); if (x.bg) tr.setAttribute('bgcolor', x.bg);
     const sb = /space-between/.test(x.jc), fin = /end/.test(x.jc), cen = /center/.test(x.jc);
-    x.hijos.forEach((h, i) => { const td = tr.insertCell(); const ult = i === x.hijos.length - 1;
+    x.hijos.forEach((h, i) => { const td = tr.insertCell(); const ult = i === x.hijos.length - 1; if (x.bg) td.setAttribute('bgcolor', x.bg);
       if (!sb) td.setAttribute('width', h.w + '%');
       td.setAttribute('style', 'vertical-align:' + h.va + ';padding:0 3px' + ((sb && ult && x.hijos.length > 1) || fin ? ';text-align:right' : cen ? ';text-align:center' : ''));
       td.appendChild(h.c); });
     x.el.replaceWith(t);
   });
+  info.forEach(x => { if (x.quitar || x.flex || !x.bg || !x.el.isConnected || /^(TD|TH|TABLE|TR|TBODY|THEAD|SPAN|B|SMALL|I|A)$/.test(x.el.tagName)) return;
+    const t = document.createElement('table'); t.setAttribute('cellspacing', '0'); t.setAttribute('cellpadding', '0'); t.setAttribute('width', '100%'); t.setAttribute('bgcolor', x.bg); t.setAttribute('style', 'width:100%;border-collapse:collapse');
+    const td = t.insertRow().insertCell(); td.setAttribute('bgcolor', x.bg); x.el.replaceWith(t); td.appendChild(x.el); });
+  host.querySelectorAll('[style]').forEach(e => e.setAttribute('style', e.getAttribute('style').replace(/rgba?\([^)]*\)/g, m => aHex(m))));
   const out = host.innerHTML; host.remove(); return out;
 }
 const pdfDoc = body => `<html><head><meta charset="utf-8"><style>${PDF_BASE_CSS}</style></head><body>${body}</body></html>`;
