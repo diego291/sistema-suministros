@@ -658,25 +658,22 @@ const CALCU = {
     const BIL = DENOM.filter(([l]) => /^Billete/.test(l)), MON = DENOM.filter(([l]) => !/^Billete/.test(l));
     const sub = arr => r2(arr.reduce((a, [l, v]) => a + num(st.ccnt[l]) * v, 0));
     const fila = ([l, v], cls) => { const e = st.cexp[l] ?? (st.ccnt[l] ? String(st.ccnt[l]) : ''); const n = ev(e);
-      return `<tr><td style="width:66px"><span class="aq-d ${cls}">${esc(l.replace(/^(Billete|Moneda) /, ''))}</span></td><td><input class="in aq-in" data-dd="${esc(l)}" inputmode="decimal" autocomplete="off" value="${esc(e)}"></td><td class="aq-eq" style="width:54px">${esOp(e) && !isNaN(n) ? '= ' + nfmt(n) : isNaN(n) ? '¿?' : ''}</td><td class="num aq-sub" style="width:78px">${num(st.ccnt[l]) ? money(num(st.ccnt[l]) * v) : '<span class="muted">—</span>'}</td></tr>`; };
+      return `<div class="cd-r"><span class="aq-d ${cls}">${esc(l.replace(/^(Billete|Moneda) /, ''))}</span><input class="in aq-in" data-dd="${esc(l)}" inputmode="decimal" autocomplete="off" value="${esc(e)}"><span class="cd-s"><small class="aq-eq">${esOp(e) && !isNaN(n) ? '=' + nfmt(n) : isNaN(n) ? '¿?' : ''}</small><b class="aq-sub">${num(st.ccnt[l]) ? money(num(st.ccnt[l]) * v) : '<span class="muted">—</span>'}</b></span></div>`; };
     const SUG = ['Caja general', 'Caja chica', 'Actividad económica', 'Cafetín', 'Uniformes', 'Evento', 'Fondo de grado'];
     const pintaTot = () => { const t = CALCU.totD(), d = st.cdebe === '' ? null : r2(t - num(st.cdebe));
-      $('[data-dt]', B).textContent = money(t); $('[data-db]', B).textContent = `Billetes ${money(sub(BIL))} · Monedas ${money(sub(MON))}`;
+      $('[data-dt]', B).textContent = money(t); $('[data-sb]', B).textContent = money(sub(BIL)); $('[data-sm]', B).textContent = money(sub(MON));
       const df = $('[data-df]', B); df.textContent = d === null ? '' : Math.abs(d) < .01 ? '✔ Cuadra' : d > 0 ? 'Sobran ' + money(d) : 'Faltan ' + money(-d); df.className = d === null ? '' : Math.abs(d) < .01 ? 'ok-t' : 'bad-t'; };
-    B.innerHTML = `<div class="form" style="grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
-        <label class="f"><span>¿De qué es este conteo?</span><input class="in" data-k="cde" list="cdeL" value="${esc(st.cde)}" placeholder="Ej.: Actividad económica, Cafetín…"><datalist id="cdeL">${SUG.map(x => `<option value="${x}">`).join('')}</datalist></label>
-        <label class="f"><span>Nota</span><input class="in" data-k="cnota" value="${esc(st.cnota)}" placeholder="Ej.: falta contar sobre de la mañana"></label></div>
-      <table class="t aq-t"><tbody>${BIL.map(d => fila(d, 'bil')).join('')}<tr><td colspan="4" style="height:4px;border:0"></td></tr>${MON.map(d => fila(d, 'mon')).join('')}</tbody></table>
-      <div class="calc-sum big" style="margin-top:6px"><span class="muted" data-db style="font-size:12px"></span><b data-dt></b></div>
-      <div class="calc-sum"><span>Debe haber <input class="in" data-k="cdebe" value="${esc(st.cdebe)}" placeholder="opcional" style="width:100px;text-align:right;margin-left:6px"></span><b data-df style="font-size:17px"></b></div>
-      <div class="bar" style="margin:8px 0 0;flex-wrap:wrap"><button class="btn sm" data-c="clr">🧹 Limpiar</button><button class="btn sm" data-c="copy">📋 Copiar total</button><button class="btn sm" data-c="print">🖨️ Imprimir conteo</button><span class="sp"></span><select class="in" data-k="ccaja" style="width:auto;padding:4px 6px" title="Arqueo al que se pasa"><option value="GENERAL" ${st.ccaja !== 'CAJA CHICA' ? 'selected' : ''}>Caja general</option><option value="CAJA CHICA" ${st.ccaja === 'CAJA CHICA' ? 'selected' : ''}>Caja chica</option></select><button class="btn sm pri" data-c="arq">➜ Pasar al arqueo</button></div>
-      <div class="muted" style="font-size:11.5px;margin-top:6px">Acepta operaciones: 40+40-5 · 4x40 · (20+16+1). Enter = siguiente. Se guarda solo.</div>`;
+    B.innerHTML = `<div class="cd-top"><input class="in" data-k="cde" list="cdeL" value="${esc(st.cde)}" placeholder="¿De qué es? (Ej.: Actividad económica)" title="¿De qué es este conteo?"><datalist id="cdeL">${SUG.map(x => `<option value="${x}">`).join('')}</datalist><input class="in" data-k="cnota" value="${esc(st.cnota)}" placeholder="Nota" title="Nota"></div>
+      <div class="cd-g"><div><div class="cd-h">💵 Billetes <span data-sb></span></div>${BIL.map(d => fila(d, 'bil')).join('')}</div><div><div class="cd-h">🪙 Monedas <span data-sm></span></div>${MON.map(d => fila(d, 'mon')).join('')}</div></div>
+      <div class="cd-tot"><span>Debe haber <input class="in" data-k="cdebe" value="${esc(st.cdebe)}" placeholder="opcional" style="width:86px;text-align:right;margin-left:4px;padding:3px 6px"></span><b data-df></b><span class="sp"></span><span class="muted" style="font-size:11.5px">TOTAL</span><b data-dt style="font-size:22px"></b></div>
+      <div class="cd-bt"><button class="btn sm" data-c="clr" title="Limpiar">🧹</button><button class="btn sm" data-c="copy" title="Copiar total">📋</button><button class="btn sm" data-c="print">🖨️ Imprimir</button><span class="sp"></span><select class="in" data-k="ccaja" style="width:auto;padding:3px 6px" title="Arqueo al que se pasa"><option value="GENERAL" ${st.ccaja !== 'CAJA CHICA' ? 'selected' : ''}>Caja general</option><option value="CAJA CHICA" ${st.ccaja === 'CAJA CHICA' ? 'selected' : ''}>Caja chica</option></select><button class="btn sm pri" data-c="arq">➜ Pasar al arqueo</button></div>
+      <div class="muted" style="font-size:11px;margin-top:4px">Acepta operaciones: 40+40-5 · 4x40 · (20+16+1) · Enter = siguiente · se guarda solo</div>`;
     pintaTot();
     const ins = $$('[data-dd]', B);
     ins.forEach((i, k) => {
-      i.oninput = () => { const l = i.dataset.dd, v = ev(i.value), tr = i.closest('tr'), val = (DENOM.find(d => d[0] === l) || [])[1];
+      i.oninput = () => { const l = i.dataset.dd, v = ev(i.value), tr = i.closest('.cd-r'), val = (DENOM.find(d => d[0] === l) || [])[1];
         st.cexp[l] = i.value; st.ccnt[l] = isNaN(v) ? 0 : v; i.classList.toggle('bad', isNaN(v)); CALCU.save();
-        $('.aq-eq', tr).textContent = esOp(i.value) && !isNaN(v) ? '= ' + nfmt(v) : isNaN(v) ? '¿?' : '';
+        $('.aq-eq', tr).textContent = esOp(i.value) && !isNaN(v) ? '=' + nfmt(v) : isNaN(v) ? '¿?' : '';
         $('.aq-sub', tr).innerHTML = num(st.ccnt[l]) ? money(num(st.ccnt[l]) * val) : '<span class="muted">—</span>'; pintaTot(); };
       i.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); const nx = ins[k + 1]; if (nx) { nx.focus(); nx.select(); } else $('[data-k=cdebe]', B).focus(); } };
       i.onfocus = () => i.select();
