@@ -897,6 +897,53 @@ document.addEventListener('click', e => {
   $$('thead th', tb).forEach(x => x.textContent = x.textContent.replace(/ [▲▼]$/, '')); th.textContent = h + (dir > 0 ? ' ▲' : ' ▼');
   ordenOriginal(tb.parentNode); ordenarTablas(tb.parentNode, h + (dir > 0 ? ' ▲' : ' ▼'), dir);
 });
+/* ======================= PDF en Drive con el mismo formato =======================
+   El conversor de Google (HTML → PDF) no entiende hojas de estilo enlazadas, variables CSS ni "flex".
+   Por eso, antes de enviar, se dibuja el reporte oculto en esta página, se copian los estilos calculados
+   a cada elemento (style="…") y las filas con flex se convierten en tablas. Así el PDF sale igual que al imprimir. */
+const PDF_BASE_CSS = 'body{margin:0;background:#fff;font-family:Arial,Helvetica,sans-serif;font-size:11.5px;color:#000}table{border-collapse:collapse}img{max-width:100%}.page{page-break-after:always}.page:last-child{page-break-after:auto}';
+const PDF_PROPS = ['color', 'background-color', 'font-size', 'font-weight', 'font-style', 'font-family', 'text-align', 'vertical-align', 'text-decoration-line', 'line-height', 'white-space', 'text-transform', 'letter-spacing',
+  'border-top', 'border-right', 'border-bottom', 'border-left', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left', 'margin-top', 'margin-bottom', 'margin-left', 'margin-right'];
+function pdfSeguro(html) {
+  const host = document.createElement('div'); host.style.cssText = 'position:absolute;left:-14000px;top:0;width:230mm;background:#fff'; host.innerHTML = html; document.body.appendChild(host);
+  host.querySelectorAll('.page').forEach(pg => { if (pg.querySelector('.memb') && !pg.querySelector('.pfoot')) pg.insertAdjacentHTML('beforeend', pfoot()); });
+  const els = Array.from(host.querySelectorAll('*')), info = [];
+  els.forEach(el => {
+    const cs = getComputedStyle(el); if (cs.display === 'none') { info.push({ el, quitar: true }); return; }
+    const st = [];
+    PDF_PROPS.forEach(pr => { let v = cs.getPropertyValue(pr); if (!v) return;
+      if (pr === 'background-color' && /rgba\(0, 0, 0, 0\)|transparent/.test(v)) return;
+      if (/^border-/.test(pr) && /^0px|none/.test(v)) return;
+      if (/^(padding|margin)-/.test(pr) && v === '0px') return;
+      if (pr === 'text-decoration-line') { if (v === 'none') return; pr = 'text-decoration'; }
+      if (pr === 'white-space' && v === 'normal') return; if (pr === 'text-transform' && v === 'none') return; if (pr === 'letter-spacing' && v === 'normal') return; if (pr === 'font-style' && v === 'normal') return;
+      st.push(pr + ':' + v); });
+    if (/^(TD|TH|COL)$/.test(el.tagName) && el.style.width) st.push('width:' + el.style.width);
+    if (el.tagName === 'IMG') st.push('height:' + el.offsetHeight + 'px', 'width:' + el.offsetWidth + 'px');
+    if (el.classList.contains('page')) st.push('margin:0');
+    if (el.tagName === 'TABLE' && el.parentElement) { const pcs = getComputedStyle(el.parentElement), pw = el.parentElement.clientWidth - parseFloat(pcs.paddingLeft) - parseFloat(pcs.paddingRight); if (pw) st.push('width:' + Math.min(100, Math.round(el.offsetWidth / pw * 100)) + '%'); }
+    if (cs.display === 'block' && /^(SMALL|B|STRONG|SPAN|A|LABEL|I|EM)$/.test(el.tagName)) st.push('display:block');
+    const flex = /flex/.test(cs.display) && cs.flexDirection.indexOf('column') < 0;
+    const hijos = flex ? Array.from(el.children).filter(c => getComputedStyle(c).display !== 'none') : [];
+    const ancho = el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    info.push({ el, st: st.join(';'), flex, hijos: hijos.map(c => ({ c, w: ancho ? Math.max(1, Math.round(c.offsetWidth / ancho * 100)) : 0, va: cs.alignItems === 'flex-start' || cs.alignItems === 'start' ? 'top' : cs.alignItems === 'flex-end' || cs.alignItems === 'end' ? 'bottom' : 'middle' })), jc: cs.justifyContent });
+  });
+  info.forEach(x => { if (x.quitar) return; x.el.removeAttribute('class'); x.el.setAttribute('style', x.st); });
+  info.filter(x => x.quitar).forEach(x => x.el.remove());
+  info.slice().reverse().forEach(x => {
+    if (!x.flex || !x.hijos.length || !x.el.isConnected) return;
+    const t = document.createElement('table'); t.setAttribute('cellspacing', '0'); t.setAttribute('cellpadding', '0'); t.setAttribute('width', '100%');
+    t.setAttribute('style', x.st + ';width:100%;border-collapse:collapse'); const tr = t.insertRow();
+    const sb = /space-between/.test(x.jc), fin = /end/.test(x.jc), cen = /center/.test(x.jc);
+    x.hijos.forEach((h, i) => { const td = tr.insertCell(); const ult = i === x.hijos.length - 1;
+      if (!sb) td.setAttribute('width', h.w + '%');
+      td.setAttribute('style', 'vertical-align:' + h.va + ';padding:0 3px' + ((sb && ult && x.hijos.length > 1) || fin ? ';text-align:right' : cen ? ';text-align:center' : ''));
+      td.appendChild(h.c); });
+    x.el.replaceWith(t);
+  });
+  const out = host.innerHTML; host.remove(); return out;
+}
+const pdfDoc = body => `<html><head><meta charset="utf-8"><style>${PDF_BASE_CSS}</style></head><body>${body}</body></html>`;
 /* ======================= Impresión ======================= */
 const Print = {
   title: '',
@@ -940,8 +987,7 @@ const Print = {
   },
   close() { $('#printView').classList.remove('on'); $('#printRoot').innerHTML = ''; },
   async drive() {
-    const css = Array.from(document.querySelectorAll('style')).map(s => s.textContent).join('\n');
-    const html = `<html><head><meta charset="utf-8"><style>${css}</style></head><body style="background:#fff">${$('#printRoot').innerHTML}</body></html>`;
+    const html = pdfDoc(pdfSeguro($('#printRoot').innerHTML));
     const t = toast('Generando PDF en Drive…', '', 20000);
     try { const r = await Sync.call({ action: 'savePdf', html, name: this.title + ' ' + new Date().toISOString().slice(0, 16).replace('T', ' ').replace(':', ''), year: Store.year }); t.remove(); toast(`PDF guardado en Drive: <a href="${r.url}" target="_blank" style="color:#fff;text-decoration:underline">abrir</a>`, 'ok', 9000); }
     catch (e) { t.remove(); toast('No se pudo crear el PDF en Drive (requiere conexión). Use "Imprimir / Guardar PDF".', 'bad', 6000); }

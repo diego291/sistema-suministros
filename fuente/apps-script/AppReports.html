@@ -205,14 +205,14 @@ function pdfIndividuales(titulo, lst, htmlDe) {
   $$('#modal [data-doc]').forEach(sel => sel.onchange = () => { const p = per(sel.value); sel.closest('tr').querySelector('[data-mail]').textContent = (p && p.email) || ''; });
 }
 async function generarLote(titulo, filas, htmlDe, send, sub, body) {
-  const css = Array.from(document.querySelectorAll('style')).map(x => x.textContent).join('\n');
+  const css = PDF_BASE_CSS;
   const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ').replace(':', '');
   const t = toast(`Generando PDF 0 de ${filas.length}…`, '', 600000);
   let folderId = '', folderUrl = '', files = [];
   try {
     for (let i = 0; i < filas.length; i += 4) {
       const items = filas.slice(i, i + 4).map(f => { const p = Store.get('personal', f.pid); const sec = tituloSec(f.x); const doc = p ? p.nombre : ''; const rep = s => String(s).replace(/\{seccion\}/g, sec).replace(/\{docente\}/g, doc || 'docente');
-        return { name: `${sec}${doc ? ' - ' + doc : ''} - ${titulo}`, html: htmlDe(f.x), email: send && p ? p.email || '' : '', subject: rep(sub || ''), body: rep(body || '') }; });
+        return { name: `${sec}${doc ? ' - ' + doc : ''} - ${titulo}`, html: pdfSeguro(htmlDe(f.x)), email: send && p ? p.email || '' : '', subject: rep(sub || ''), body: rep(body || '') }; });
       const r = await Sync.call({ action: 'pdfBatch', year: Store.year, folderId, folderName: `${titulo} ${stamp}`, css, items, send, sender: CFG.inst.area || 'Suministros' });
       folderId = r.folderId; folderUrl = r.folderUrl; files = files.concat(r.files);
       t.innerHTML = `Generando PDF ${files.length} de ${filas.length}…`;
