@@ -29,7 +29,7 @@ var CHUNK = 45000; // tamaño máximo por celda al guardar la configuración
 function doGet(e) {
   var p = (e && e.parameter) || {};
   if (p.cb) return jsonp_(p);
-  if (p.ping) return json_({ ok: true, app: APP_NAME, api: 3, t: Date.now() });
+  if (p.ping) return json_({ ok: true, app: APP_NAME, api: 4, t: Date.now() });
   if (!p.clasico && props_().getProperty('REDIRIGIR') === 'si') return paginaRedirigir_();
   var t = HtmlService.createTemplateFromFile('Index');
   t.boot = JSON.stringify({ mode: 'gas', apiUrl: '', token: '' });
@@ -722,43 +722,49 @@ function pubCheck_(folderId) {
 }
 function publicar_(req) {
   var folder = DriveApp.getFolderById(req.folderId);
-  var ss = null;
-  if (req.sheetId) { try { ss = SpreadsheetApp.openById(req.sheetId); } catch (e) { ss = null; } }
+  var ss = null, errores = [];
+  /* La misma hoja siempre: por su ID guardado (si no está en la papelera) o, si no, la que tenga ese nombre en la carpeta */
+  if (req.sheetId) { try { if (!DriveApp.getFileById(req.sheetId).isTrashed()) ss = SpreadsheetApp.openById(req.sheetId); } catch (e) { ss = null; } }
+  if (!ss) { var it = folder.getFilesByName(req.sheetName || 'Publicado'); while (it.hasNext()) { var fx = it.next(); if (!fx.isTrashed() && fx.getMimeType() === MimeType.GOOGLE_SHEETS) { ss = SpreadsheetApp.openById(fx.getId()); break; } } }
   if (!ss) { ss = SpreadsheetApp.create(req.sheetName || 'Publicado'); DriveApp.getFileById(ss.getId()).moveTo(folder); }
   else if (req.sheetName && ss.getName() !== req.sheetName) ss.rename(req.sheetName);
+  var limpio = function (v) { return v === null || v === undefined ? '' : (typeof v === 'object' ? String(v) : v); };
   var hechos = [];
   (req.tabs || []).forEach(function (t, idx) {
+   try {
     var sh = ss.getSheetByName(t.name) || ss.insertSheet(t.name);
     sh.getProtections(SpreadsheetApp.ProtectionType.SHEET).forEach(function (pr) { pr.remove(); });
     sh.clear(); sh.clearConditionalFormatRules();
     try { sh.getRange(1, 1, sh.getMaxRows(), sh.getMaxColumns()).breakApart(); } catch (e) { }
-    var nc = Math.max(1, t.headers.length), nr = (t.rows || []).length, color = t.color || '#1f3864';
+    var nc = Math.max(1, t.headers.length), rows = (t.rows || []), nr = rows.length, color = t.color || '#1f3864';
+    var fila = function (r, def) { var x = (r || []).slice(0, nc).map(function (v) { return def === undefined ? limpio(v) : (v || def); }); while (x.length < nc) x.push(def === undefined ? '' : def); return x; };
     if (sh.getMaxColumns() < nc) sh.insertColumnsAfter(sh.getMaxColumns(), nc - sh.getMaxColumns());
     if (sh.getMaxRows() < nr + 4) sh.insertRowsAfter(sh.getMaxRows(), nr + 4 - sh.getMaxRows());
     sh.getRange(1, 1, 1, nc).merge().setValue(t.title || t.name).setBackground(color).setFontColor('#ffffff').setFontWeight('bold').setFontSize(13).setHorizontalAlignment('center').setVerticalAlignment('middle');
     sh.setRowHeight(1, 30);
-    sh.getRange(2, 1, 1, nc).merge().setValue(t.subtitle || '').setBackground(t.light || '#ddebf7').setFontColor(color).setFontSize(10).setHorizontalAlignment('center');
-    sh.getRange(3, 1, 1, nc).setValues([t.headers]).setBackground(color).setFontColor('#ffffff').setFontWeight('bold').setHorizontalAlignment('center').setVerticalAlignment('middle').setWrap(true);
+    sh.getRange(2, 1, 1, nc).merge().setValue(t.subtitle || '').setBackground(t.light || '#ddebf7').setFontColor(color).setFontSize(10).setHorizontalAlignment('center').setWrap(true);
+    sh.getRange(3, 1, 1, nc).setValues([fila(t.headers)]).setBackground(color).setFontColor('#ffffff').setFontWeight('bold').setHorizontalAlignment('center').setVerticalAlignment('middle').setWrap(true);
     if (nr) {
       var rg = sh.getRange(4, 1, nr, nc);
-      rg.setValues(t.rows.map(function (r) { var x = r.slice(0, nc); while (x.length < nc) x.push(''); return x; }));
+      rg.setValues(rows.map(function (r) { return fila(r); }));
       rg.setBorder(true, true, true, true, true, true, '#d0d7e1', SpreadsheetApp.BorderStyle.SOLID).setVerticalAlignment('middle').setFontSize(10);
-      (t.fmt || []).forEach(function (f, c) {
+      (t.fmt || []).slice(0, nc).forEach(function (f, c) {
         var col = sh.getRange(4, c + 1, nr, 1);
         if (f === 'money') col.setNumberFormat('"$"#,##0.00').setHorizontalAlignment('right');
         else if (f === 'num') col.setNumberFormat('0.##').setHorizontalAlignment('right');
         else if (f === 'center') col.setHorizontalAlignment('center');
         else if (f === 'text') col.setNumberFormat('@');
       });
-      if (t.bg) rg.setBackgrounds(t.bg.map(function (r) { return r.slice(0, nc).map(function (v) { return v || '#ffffff'; }); }));
-      if (t.fc) rg.setFontColors(t.fc.map(function (r) { return r.slice(0, nc).map(function (v) { return v || '#1d2433'; }); }));
-      (t.bold || []).forEach(function (i) { sh.getRange(4 + i, 1, 1, nc).setFontWeight('bold').setBackground(t.light || '#ddebf7'); });
+      if (t.bg) rg.setBackgrounds(rows.map(function (r, i) { return fila(t.bg[i], '#ffffff'); }));
+      if (t.fc) rg.setFontColors(rows.map(function (r, i) { return fila(t.fc[i], '#1d2433'); }));
+      (t.bold || []).forEach(function (i) { if (i >= 0 && i < nr) sh.getRange(4 + i, 1, 1, nc).setFontWeight('bold').setBackground(t.light || '#ddebf7'); });
     }
-    (t.widths || []).forEach(function (w, c) { if (w) sh.setColumnWidth(c + 1, w); });
+    (t.widths || []).slice(0, nc).forEach(function (w, c) { if (w) sh.setColumnWidth(c + 1, w); });
     sh.setFrozenRows(3); sh.setHiddenGridlines(true);
     sh.protect().setDescription('Publicado desde el Sistema de Suministros').setWarningOnly(true);
     ss.setActiveSheet(sh); ss.moveActiveSheet(idx + 1);
     hechos.push(t.name);
+   } catch (e) { errores.push(t.name + ': ' + (e.message || e)); hechos.push(t.name); }
   });
   /* Quitar pestañas que ya no se publican (y la "Hoja 1" vacía inicial) */
   ss.getSheets().forEach(function (sh) { if (hechos.indexOf(sh.getName()) < 0 && ss.getSheets().length > 1) ss.deleteSheet(sh); });
@@ -776,5 +782,5 @@ function publicar_(req) {
     if (hist) { var hv = hist.getFilesByName(p.name + ' ' + req.fecha + '.pdf'); while (hv.hasNext()) hv.next().setTrashed(true); hist.createFile(blob.copyBlob().setName(p.name + ' ' + req.fecha + '.pdf')); }
   });
   SpreadsheetApp.flush();
-  return { sheetId: ss.getId(), sheetUrl: ss.getUrl(), folderUrl: folder.getUrl(), files: files, tabs: hechos };
+  return { sheetId: ss.getId(), sheetUrl: ss.getUrl(), folderUrl: folder.getUrl(), files: files, tabs: hechos, errores: errores };
 }

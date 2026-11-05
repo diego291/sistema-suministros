@@ -1186,7 +1186,7 @@ defView('pub:panel', 'Publicar en Drive compartido', el => {
         const r = await Sync.call({ action: 'publicar', folderId: c.folder, sheetId: c.sheetId, sheetName: nombre, tabs: tabs.map(x => { const n = x.headers.length, pad = m => m ? x.rows.map((_, i) => { const r = (m[i] || []).slice(0, n); while (r.length < n) r.push(''); return r; }) : undefined; return ({ name: x.name, title: x.title, subtitle: x.subtitle, headers: x.headers, rows: x.rows.map(r => { const q = r.slice(0, n); while (q.length < n) q.push(''); return q; }), fmt: x.fmt, bg: pad(x.bg), fc: pad(x.fc), widths: x.widths, bold: x.bold, color: x.color, light: x.light }); }), pdfs, historial: c.historial, mes: today().slice(0, 7), fecha: today() });
         c.sheetId = r.sheetId; c.sheetUrl = r.sheetUrl;
         c.log.unshift({ f: `${fdate(today())} ${new Date().toTimeString().slice(0, 5)}`, que: [...tabs.map(x => x.name), ...pdfsSel.map(([, l]) => l + '.pdf')].join(', '), sheetUrl: r.sheetUrl, files: r.files }); c.log = c.log.slice(0, 20);
-        await saveCfg(true); t.remove(); toast('Publicado ✔', 'ok'); draw();
+        await saveCfg(true); t.remove(); if (r.errores && r.errores.length) toast('Publicado, pero con problemas en: ' + r.errores.join(' · '), 'bad', 15000); else toast('Publicado ✔', 'ok'); draw();
       } catch (e) { t.remove(); toast('No se pudo publicar: ' + errTxt(e), 'bad', 10000); }
     };
   };
