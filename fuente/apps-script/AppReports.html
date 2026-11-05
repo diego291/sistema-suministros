@@ -1130,6 +1130,7 @@ function tablaPrevia(t) {
     ${t.rows.map((r, i) => `<tr${(t.bold || []).includes(i) ? ' class="pub-b"' : ''}>${Array.from({ length: n }, (_, j) => { const v = r[j], f = (t.fmt || [])[j]; const bg = t.bg && t.bg[i] && t.bg[i][j], fc = t.fc && t.fc[i] && t.fc[i][j];
       return `<td style="${bg ? 'background:' + bg + ';' : ''}${fc ? 'color:' + fc + ';' : ''}${f === 'money' || f === 'num' ? 'text-align:right;' : f === 'center' ? 'text-align:center;' : ''}">${v === '' || v === undefined ? '' : f === 'money' && typeof v === 'number' ? money(v) : esc(String(v))}</td>`; }).join('')}</tr>`).join('') || `<tr><td colspan="${n}" class="muted">Sin datos</td></tr>`}</tbody></table></div></div>`;
 }
+const errTxt = e => { const m = e && (e.message || e.error) || (typeof e === 'object' ? JSON.stringify(e) : String(e)); return /Acci[oó]n desconocida/i.test(m) ? 'Falta actualizar Code.gs en Apps Script (y crear “Nueva versión” en las implementaciones).' : m; };
 defView('pub:panel', 'Publicar en Drive compartido', el => {
   const c = pubCfg(); let ver = LS.get('pubVer', 'cafetines');
   const guardar = () => saveCfg(true);
@@ -1174,7 +1175,7 @@ defView('pub:panel', 'Publicar en Drive compartido', el => {
     $$('[data-vpdf]', el).forEach(b => b.onclick = () => Print.show((PUB_PDFS.find(x => x[0] === b.dataset.vpdf) || [])[1], pubPdfPage(b.dataset.vpdf, c)));
     $('#pChk', el).onclick = async () => { if (!c.folder) return toast('Pegue primero el link de la carpeta', 'bad');
       try { const r = await Sync.call({ action: 'pubCheck', folderId: c.folder }); c.folderNombre = r.nombre; guardar(); toast('Acceso correcto ✔ · ' + r.nombre, 'ok'); draw(); }
-      catch (e) { toast('No se pudo escribir en la carpeta: ' + (e.message || e) + '. Revise que tenga permiso de Editor (y que Code.gs esté actualizado).', 'bad', 9000); } };
+      catch (e) { { const m = errTxt(e); toast(/Code\.gs/.test(m) ? m : 'No se pudo escribir en la carpeta: ' + m + '. Revise que tenga permiso de Editor.', 'bad', 10000); } } };
     $('#pPub', el).onclick = async () => {
       if (!tabs.length && !pdfsSel.length) return toast('No hay nada seleccionado para publicar', 'bad');
       if (!(await confirmBox(`<b>Se publicará en “${esc(c.folderNombre || 'la carpeta')}” y lo verán todos los que tienen acceso:</b><ul style="margin:8px 0 0;padding-left:18px">${tabs.map(t => `<li>Pestaña <b>${esc(t.name)}</b> (${t.rows.length} filas)</li>`).join('')}${pdfsSel.map(([, l]) => `<li>PDF <b>${esc(l)}</b> (reemplaza el anterior)</li>`).join('')}</ul><p style="margin:10px 0 0">¿Publicar ahora?</p>`, '📤 Publicar'))) return;
@@ -1186,7 +1187,7 @@ defView('pub:panel', 'Publicar en Drive compartido', el => {
         c.sheetId = r.sheetId; c.sheetUrl = r.sheetUrl;
         c.log.unshift({ f: `${fdate(today())} ${new Date().toTimeString().slice(0, 5)}`, que: [...tabs.map(x => x.name), ...pdfsSel.map(([, l]) => l + '.pdf')].join(', '), sheetUrl: r.sheetUrl, files: r.files }); c.log = c.log.slice(0, 20);
         await saveCfg(true); t.remove(); toast('Publicado ✔', 'ok'); draw();
-      } catch (e) { t.remove(); toast('No se pudo publicar: ' + (e.message || e), 'bad', 9000); }
+      } catch (e) { t.remove(); toast('No se pudo publicar: ' + errTxt(e), 'bad', 10000); }
     };
   };
   draw();
