@@ -1075,8 +1075,8 @@ function pubTabsSpec(c) {
     const g = C.ord.filter(r => num(r.haber)).reduce((s, r) => s + num(r.haber), 0);
     const rows = [['CAFETINES Y LOCALES', ''], ['Arrendatarios', ec.length], ['Esperado a la fecha', T('esp')], ['Pagado', T('pag')], ['Saldo vencido (a la fecha)', T('saldo')], ['Por vencer (resto de contratos)', T('porVencer')],
       ['', ''], ['CAJA CHICA', ''], ['Fondo asignado', num(CFG.caja.fondo)], ['Caja actual', 'C' + C.actual], ['Saldo actual', num(C.saldo)], [`Gastos documentados ${Store.year}`, r2(g)]];
-    out.push({ key: 'resumen', name: 'Resumen', title: `RESUMEN ${Store.year} · ${CFG.inst.nombre}`, subtitle: sello, headers: ['Concepto', 'Valor'], rows: rows.map(r => [r[0], typeof r[1] === 'number' && !/Arrendatarios/.test(r[0]) ? r2(r[1]) : r[1]]),
-      fmt: ['', 'money'], widths: [320, 160], bold: [0, 7], moneyRows: true });
+    out.push({ key: 'resumen', name: 'Resumen', title: `RESUMEN ${Store.year}`, subtitle: sello.replace('Publicado desde el Sistema de Suministros el', 'Publicado el'), headers: ['Concepto', 'Valor'], rows: rows.map(r => [r[0], typeof r[1] === 'number' && !/Arrendatarios/.test(r[0]) ? r2(r[1]) : r[1]]),
+      fmt: ['', 'money'], widths: [360, 300], bold: [0, 7], moneyRows: true });
     out[out.length - 1].fmt = ['', ''];
     out[out.length - 1].rows = rows.map(r => [r[0], typeof r[1] === 'number' && !/Arrendatarios/.test(r[0]) ? money(r[1]) : r[1]]);
   }
