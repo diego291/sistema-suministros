@@ -564,6 +564,12 @@ function vistaArqueo(el, p) {
   let exprs = Object.assign({}, cnt._expr || {}); delete cnt._expr;
   let manual = prev ? num(prev.esperado) : null;
   let notas = prev ? prev.notas || '' : '', fecha = prev ? prev.fecha : today();
+  /* Borrador: mientras cuenta, lo escrito se guarda en este equipo y vuelve si sale de la pantalla */
+  const dKey = () => 'aqBorr_' + caja; let borr = null;
+  const cargaBorr = () => { borr = null; if (prev) return; const b = LS.get(dKey(), null); if (!b) return; borr = b; cnt = b.cnt || {}; exprs = b.exprs || {}; notas = b.notas || ''; manual = b.manual ?? null; fecha = b.fecha || today(); };
+  const guardaBorr = () => { if (prev) return; const hay = Object.values(cnt).some(Boolean) || notas.trim(); if (!hay) { LS.set(dKey(), null); return; } LS.set(dKey(), { cnt, exprs, notas, manual, fecha, t: Date.now() }); };
+  const borraBorr = () => { LS.set(dKey(), null); borr = null; };
+  cargaBorr();
   const ultimo = c => Store.all('arqueos').filter(a => a.caja === c).sort((a, b) => String(b.fecha).localeCompare(a.fecha) || num(b._upd) - num(a._upd))[0];
   const esperadoAuto = () => caja === 'CAJA CHICA' ? prepCaja(Store.all('cajachica')).saldo : posicionCaja().debe;
   const vista = (extra) => go(caja === 'CAJA CHICA' ? 'c:arqueo' : 't:arqueo', Object.assign({ caja }, extra || {}));
@@ -586,6 +592,7 @@ function vistaArqueo(el, p) {
     const ult = ultimo(caja);
     el.innerHTML = `<div class="bar"><div class="chips">${['GENERAL', 'CAJA CHICA'].map(c => `<span class="chip ${c === caja ? 'on' : ''}" data-c="${c}">${c === 'GENERAL' ? 'Caja general (ingresos)' : 'Caja chica'}</span>`).join('')}</div><span class="sp"></span>
       <label class="f"><span>Fecha</span><input type="date" class="in" id="aF" value="${fecha}"></label></div>
+    ${borr ? `<div class="alert warn">📝 Se recuperó el conteo que dejó sin guardar (${new Date(borr.t).toLocaleString('es-SV', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}). Puede seguir donde se quedó. <button class="btn sm" id="aDB" style="margin-left:8px">Descartar borrador</button></div>` : ''}
     ${prev ? `<div class="alert info">📂 Está viendo el arqueo guardado del <b>${fdate(prev.fecha)}</b> (${esc(prev.resultado || '')}). Puede corregirlo y <b>guardar cambios</b>, o usarlo de base y <b>guardar como arqueo nuevo</b>. <button class="btn sm" id="aNw" style="margin-left:8px">+ Empezar arqueo nuevo</button></div>`
       : ult ? `<div class="alert info">Último arqueo de esta caja: <b>${fdate(ult.fecha)}</b> · contado ${money(ult.contado)} · ${esc(ult.resultado || '')}.</div>` : ''}
     <div class="card aq-top"><div class="aq-res">
@@ -601,12 +608,12 @@ function vistaArqueo(el, p) {
     <div class="card" style="margin-top:12px"><div class="bar" style="margin:0;align-items:flex-start"><button class="btn" id="aU" ${ult ? '' : 'disabled'} title="Cargar las cantidades del último arqueo guardado">📂 Traer último</button><button class="btn" id="aL" title="Borrar las cantidades escritas">🧹 Limpiar</button>
       <label class="f" style="flex:1;margin:0"><span>Notas / explicación de diferencias</span><textarea class="in" id="aN" rows="2">${esc(notas)}</textarea></label></div></div>`;
     pintaRes();
-    $$('[data-c]', el).forEach(c => c.onclick = () => { if (prev) { caja = c.dataset.c; vista(); return; } caja = c.dataset.c; manual = null; draw(); });
+    $$('[data-c]', el).forEach(c => c.onclick = () => { if (prev) { caja = c.dataset.c; vista(); return; } caja = c.dataset.c; cnt = {}; exprs = {}; notas = ''; manual = null; fecha = today(); cargaBorr(); draw(); });
     const ins = $$('[data-d]', el);
     ins.forEach((i, k) => {
       i.oninput = () => {
         const l = i.dataset.d, v = evalCant(i.value), tr = i.closest('tr'), val = (DENOM.find(d => d[0] === l) || [])[1];
-        exprs[l] = i.value; i.classList.toggle('bad', isNaN(v));
+        exprs[l] = i.value; i.classList.toggle('bad', isNaN(v)); setTimeout(guardaBorr, 0);
         cnt[l] = isNaN(v) ? 0 : v;
         $('.aq-eq', tr).textContent = esOp(i.value) && !isNaN(v) ? '= ' + nfmt(v) : isNaN(v) ? '¿?' : '';
         $('.aq-sub', tr).innerHTML = num(cnt[l]) ? money(num(cnt[l]) * val) : '<span class="muted">—</span>';
@@ -615,16 +622,17 @@ function vistaArqueo(el, p) {
       i.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); const nx = ins[k + 1]; if (nx) { nx.focus(); nx.select(); } else $('#aN', el).focus(); } };
       i.onfocus = () => i.select();
     });
-    $('#aE', el).onchange = e => { manual = num(e.target.value); pintaRes(); };
-    $('#aR', el).onclick = () => { manual = null; $('#aE', el).value = r2(esp()).toFixed(2); pintaRes(); };
-    $('#aN', el).oninput = e => { notas = e.target.value; };
-    $('#aF', el).onchange = e => { fecha = e.target.value; };
-    $('#aL', el).onclick = async () => { if (Object.values(cnt).some(Boolean) && !(await confirmBox('¿Borrar todas las cantidades escritas en el conteo?', 'Limpiar'))) return; cnt = {}; exprs = {}; draw(); const f = $('[data-d]', el); f && f.focus(); };
-    $('#aU', el).onclick = () => { const u = ultimo(caja); if (!u) return; let c = {}; try { c = JSON.parse(u.conteo || '{}'); } catch (e) { } exprs = Object.assign({}, c._expr || {}); delete c._expr; cnt = c; draw(); toast(`Se cargaron las cantidades del arqueo del ${fdate(u.fecha)} (${money(u.contado)})`, 'ok'); };
+    $('#aE', el).onchange = e => { manual = num(e.target.value); pintaRes(); guardaBorr(); };
+    const db = $('#aDB', el); if (db) db.onclick = async () => { if (!(await confirmBox('¿Descartar el conteo sin guardar y empezar de cero?', 'Descartar'))) return; borraBorr(); cnt = {}; exprs = {}; notas = ''; manual = null; fecha = today(); draw(); };
+    $('#aR', el).onclick = () => { manual = null; $('#aE', el).value = r2(esp()).toFixed(2); pintaRes(); guardaBorr(); };
+    $('#aN', el).oninput = e => { notas = e.target.value; guardaBorr(); };
+    $('#aF', el).onchange = e => { fecha = e.target.value; guardaBorr(); };
+    $('#aL', el).onclick = async () => { if (Object.values(cnt).some(Boolean) && !(await confirmBox('¿Borrar todas las cantidades escritas en el conteo?', 'Limpiar'))) return; cnt = {}; exprs = {}; borraBorr(); draw(); const f = $('[data-d]', el); f && f.focus(); };
+    $('#aU', el).onclick = () => { const u = ultimo(caja); if (!u) return; let c = {}; try { c = JSON.parse(u.conteo || '{}'); } catch (e) { } exprs = Object.assign({}, c._expr || {}); delete c._expr; cnt = c; guardaBorr(); draw(); toast(`Se cargaron las cantidades del arqueo del ${fdate(u.fecha)} (${money(u.contado)})`, 'ok'); };
     const nw = $('#aNw', el); if (nw) nw.onclick = () => vista();
     const rec = (nuevo) => { const r = resultado(); const ex = {}; DENOM.forEach(([l]) => { if (exprs[l] && esOp(exprs[l])) ex[l] = exprs[l]; });
       return { _id: prev && !nuevo ? prev._id : undefined, fecha: $('#aF', el).value, caja, contado: contado(), esperado: esp(), diferencia: r.d, resultado: r.txt, conteo: JSON.stringify(Object.assign({}, cnt, Object.keys(ex).length ? { _expr: ex } : {})), notas: $('#aN', el).value, snap: caja === 'GENERAL' ? (prev && !nuevo && prev.snap ? prev.snap : snapCaja($('#aF', el).value)) : '' }; };
-    const guardar = async nuevo => { if ($$('[data-d].bad', el).length) return toast('Hay una cantidad con una operación inválida (marcada en rojo)', 'bad'); if (!contado() && !(await confirmBox('El conteo está en $0.00. ¿Guardar el arqueo así?', 'Guardar'))) return; const r = await Store.save('arqueos', rec(nuevo)); toast('Arqueo guardado ✔', 'ok'); go(caja === 'CAJA CHICA' ? 'c:arqueo' : 't:arqueo', { caja, id: r._id }); };
+    const guardar = async nuevo => { if ($$('[data-d].bad', el).length) return toast('Hay una cantidad con una operación inválida (marcada en rojo)', 'bad'); if (!contado() && !(await confirmBox('El conteo está en $0.00. ¿Guardar el arqueo así?', 'Guardar'))) return; const r = await Store.save('arqueos', rec(nuevo)); borraBorr(); toast('Arqueo guardado ✔', 'ok'); go(caja === 'CAJA CHICA' ? 'c:arqueo' : 't:arqueo', { caja, id: r._id }); };
     $('#aS', el).onclick = () => guardar(false);
     const sn = $('#aSn', el); if (sn) sn.onclick = () => guardar(true);
     $('#aP', el).onclick = () => { const r = rec(); const e2 = esp(), c2 = contado(); Print.show('Arqueo de ' + caja.toLowerCase(), `<div class="page">${membrete()}<div class="ptitle">ARQUEO DE ${caja === 'GENERAL' ? 'CAJA GENERAL' : 'CAJA CHICA'}</div><div class="psub">Fecha del arqueo: ${flong(r.fecha)}</div>
