@@ -678,6 +678,39 @@ function estadoCuentaArr() {
   });
   return out;
 }
+
+/* ---------- CONSTANCIA DE SOLVENCIA (y finalización de contrato) de arrendatarios ---------- */
+function dlgSolvencia(x) {
+  const a = x.a, solvente = x.saldo <= 0.004 && x.porVencer <= 0.004;
+  const finC = dobj(a.fin), terminado = finC && toYMD(a.fin) <= today();
+  const pendTxt = [...x.pend, ...x.fut].map(m => MESES[m - 1]).join(', ');
+  modal(`📄 Constancia de solvencia · ${esc(a.nombre)}`, `${solvente ? `<div class="alert ok" style="margin-top:0">✔ Tiene pagado todo su contrato de ${Store.year}: ${money(x.pag)}.</div>` : `<div class="alert warn" style="margin-top:0">⚠ No está solvente: falta ${money(x.saldo + x.porVencer)} (${esc(pendTxt)}). La carta saldrá como <b>constancia de estado de pagos</b> indicando lo pendiente.</div>`}
+    <div class="form"><label class="f"><span>Fecha de la constancia</span><input class="in" type="date" id="svF" value="${today()}"></label>
+    <label class="f"><span>Fecha de entrega del local (opcional)</span><input class="in" type="date" id="svE"></label>
+    <label class="chk" style="grid-column:1/-1"><input type="checkbox" id="svFin" ${terminado || (solvente && finC) ? 'checked' : ''}> Incluir <b>finalización del contrato</b>${finC ? ` (termina el ${flong(a.fin)})` : ''}</label>
+    <label class="chk" style="grid-column:1/-1"><input type="checkbox" id="svDet" checked> Incluir el detalle de pagos (mes, fecha, recibo y monto)</label>
+    <label class="f wide"><span>Observaciones (opcional)</span><textarea class="in" id="svO" rows="2" placeholder="Ej.: El local se entregó limpio y con las llaves."></textarea></label></div>`,
+    [{ l: 'Cancelar' }, { l: '🖨️ Generar constancia', pri: 1, fn: () => { const o = { fecha: $('#svF').value || today(), entrega: $('#svE').value, fin: $('#svFin').checked, det: $('#svDet').checked, obs: $('#svO').value.trim() }; setTimeout(() => Print.show('Constancia de solvencia - ' + a.nombre, paginaSolvencia(x, o)), 30); } }]);
+}
+function paginaSolvencia(x, o) {
+  const a = x.a, I = CFG.inst, solvente = x.saldo <= 0.004 && x.porVencer <= 0.004;
+  const d = dobj(o.fecha) || new Date(), mesesTxt = x.desde <= x.hastaC ? `${MESES[x.desde - 1]} a ${MESES[x.hastaC - 1]} de ${Store.year}` : `${Store.year}`;
+  const quien = `<b>${esc(String(a.nombre).toUpperCase())}</b>${a.dui ? `, con Documento Único de Identidad número <b>${esc(a.dui)}</b>` : ''}`;
+  const local = [a.espacio, a.categoria && !String(a.espacio || '').toLowerCase().includes(String(a.categoria).toLowerCase()) ? `(${a.categoria})` : ''].filter(Boolean).join(' ');
+  const contrato = a.inicio || a.fin ? `, según contrato de arrendamiento${a.inicio ? ` vigente desde el ${flong(a.inicio)}` : ''}${a.fin ? ` hasta el ${flong(a.fin)}` : ''}` : '';
+  const pendTxt = [...x.pend, ...x.fut].map(m => MESES[m - 1]).join(', ');
+  const p1 = `El Consejo Directivo Escolar del ${esc(I.nombre)} <b>HACE CONSTAR</b> que ${quien}, arrendatario(a) del ${esc(local || 'espacio')} de este centro educativo${contrato}, con una cuota mensual de <b>${money(a.cuota)}</b>, ` +
+    (solvente ? `ha cancelado la totalidad de las cuotas correspondientes a los meses de ${mesesTxt}, por un monto total de <b>${money(x.pag)}</b> (${esc(numLetras(x.pag))}), por lo que se encuentra <b>SOLVENTE</b> con esta institución.`
+      : `a la fecha ha cancelado <b>${money(x.pag)}</b>, quedando pendiente la cantidad de <b>${money(x.saldo + x.porVencer)}</b> correspondiente a ${esc(pendTxt)} de ${Store.year}.`);
+  const p2 = o.fin ? (solvente ? `Asimismo, se hace constar que el contrato de arrendamiento ${dobj(a.fin) && toYMD(a.fin) <= toYMD(o.fecha) ? 'finalizó' : 'finaliza'}${a.fin ? ' el ' + flong(a.fin) : ''}${o.entrega ? `, que el local fue entregado a esta institución el ${flong(o.entrega)}` : ''} y que no quedan obligaciones económicas pendientes por parte del arrendatario(a).`
+    : `El contrato de arrendamiento ${a.fin ? 'finaliza el ' + flong(a.fin) : 'se encuentra en proceso de finalización'}; para extender la constancia de solvencia y cierre del contrato deberá cancelar el saldo pendiente.`) : '';
+  const p3 = `Y para los usos que se estime conveniente, se extiende la presente en ${esc(I.lugar || 'San Salvador')}, a los ${d.getDate()} días del mes de ${MESES[d.getMonth()]} de ${d.getFullYear()}.`;
+  const det = o.det && x.lista.length ? `<div style="margin:10px 0 4px;font-weight:700;color:#1f3864">Detalle de pagos</div>${ptable(['Mes que cancela', 'Fecha de pago', 'Recibo', 'Comprobante', 'Monto'], x.lista.map(pg => `<tr><td>${esc(cap(String(pg.mes || '').toLowerCase()))}</td><td class="c">${fdate(pg.fecha)}</td><td class="c">${esc(pg.recibo || '')}</td><td class="c">${esc(pg.comprobante || pg.boleta || '')}</td><td class="r">${money(pg.cantidad)}</td></tr>`).concat([`<tr class="tot"><td colspan="4">TOTAL PAGADO</td><td class="r">${money(x.pag)}</td></tr>`]))}` : '';
+  return `<div class="page">${membrete()}${pref('', `${I.lugar || 'San Salvador'}, ${flong(o.fecha)}`)}
+    <div class="ptitle" style="margin:6px 0 16px">${solvente ? (o.fin ? 'CONSTANCIA DE SOLVENCIA Y FINALIZACIÓN DE CONTRATO' : 'CONSTANCIA DE SOLVENCIA') : 'CONSTANCIA DE ESTADO DE PAGOS'}</div>
+    <div class="ptxt"><p>${p1}</p>${p2 ? `<p>${p2}</p>` : ''}${det}${o.obs ? `<p><b>Observaciones:</b> ${esc(o.obs)}</p>` : ''}<p style="margin-top:12px">${p3}</p></div>
+    ${firmasDoc('solvencia')}</div>`;
+}
 defView('t:arrcuenta', 'Estado de cuenta de arrendatarios', (el, p) => {
   let cat = LS.get('arrCat', '');
   const draw = () => {
@@ -692,7 +725,7 @@ defView('t:arrcuenta', 'Estado de cuenta de arrendatarios', (el, p) => {
       <div class="kpis"><div class="kpi"><div class="l">Arrendatarios</div><div class="v">${filas.length}</div></div><div class="kpi"><div class="l">Esperado a la fecha</div><div class="v">${money(T('esp'))}</div></div><div class="kpi ok"><div class="l">Pagado</div><div class="v">${money(T('pag'))}</div></div><div class="kpi ${T('saldo') > 0.004 ? 'bad' : 'ok'}"><div class="l">Saldo vencido (a la fecha)</div><div class="v">${money(T('saldo'))}</div></div><div class="kpi ${T('porVencer') > 0.004 ? 'warn' : 'ok'}"><div class="l">Por vencer (resto del contrato)</div><div class="v">${money(T('porVencer'))}</div></div></div>
       ${filas.length ? `<div class="tw"><table class="t"><thead><tr><th>Arrendatario</th><th>Categoría</th><th class="r">Cuota</th>${MESES_CAP.map(m => `<th class="c">${m.slice(0, 3)}</th>`).join('')}<th class="r">Esperado</th><th class="r">Pagado</th><th class="r">Saldo</th><th class="r">Por vencer</th><th></th></tr></thead><tbody>
       ${filas.map(x => `<tr data-a="${x.a._id}"><td><b>${esc(x.a.nombre)}</b><br><small class="muted">${esc(x.a.espacio || '')}${x.a.notas ? ' 📝' : ''}</small></td><td>${esc(x.a.categoria || '')}</td><td class="num">${money(x.a.cuota)}</td>${Array.from({ length: 12 }, (_, i) => celda(x, i + 1)).join('')}<td class="num">${money(x.esp)}</td><td class="num">${money(x.pag)}</td><td class="num"><b class="${x.saldo > 0.004 ? 'bad-t' : 'ok-t'}">${money(x.saldo)}</b></td><td class="num ${x.porVencer > 0.004 ? 'warn-t' : 'muted'}" title="${esc(x.fut.map(m => MESES_CAP[m - 1]).join(', '))}">${x.porVencer > 0.004 ? money(x.porVencer) + '<br><small>' + esc(x.fut.map(m => MESES_CAP[m - 1].slice(0, 3)).join(', ')) + '</small>' : '—'}</td>
-        <td class="act"><button class="btn sm" data-pay>+ Pago</button> <button class="btn sm" data-carta ${x.saldo > 0.004 ? '' : 'disabled'}>✉️ Carta</button></td></tr>`).join('')}</tbody></table></div>
+        <td class="act"><button class="btn sm" data-pay>+ Pago</button> <button class="btn sm" data-carta ${x.saldo > 0.004 ? '' : 'disabled'}>✉️ Carta</button> <button class="btn sm" data-solv title="Constancia de solvencia y finalización del contrato">📄 Solvencia</button></td></tr>`).join('')}</tbody></table></div>
       <p class="muted" style="font-size:12px">✔ pagado · ◐ abono parcial · ✘ pendiente (ya venció) · ○ por vencer (mes del contrato que aún no llega) · el saldo cuenta hasta el mes actual; “Por vencer” muestra lo que falta hasta el fin del contrato. El mes del pago se toma de “Mes que cancela”.</p>`
       : `<div class="empty">No hay arrendatarios. Agregue cafetines, chalets o locales con <b>+ Arrendatario</b>.</div>`}
       ${p.id && filas[0] ? `<div class="card"><h3>Pagos registrados de ${esc(filas[0].a.nombre)}</h3><table class="t"><thead><tr><th>Mes</th><th>Fecha</th><th>Recibo</th><th>Comprobante</th><th class="r">Cantidad</th><th>Obs.</th></tr></thead><tbody>${filas[0].lista.map(pg => `<tr><td>${esc(pg.mes || '')}</td><td>${fdate(pg.fecha)}</td><td>${esc(pg.recibo || '')}</td><td>${esc(pg.comprobante || '')}</td><td class="num">${money(pg.cantidad)}</td><td>${esc(pg.obs || '')}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">Sin pagos</td></tr>'}</tbody></table></div>` : ''}`;
@@ -702,6 +735,7 @@ defView('t:arrcuenta', 'Estado de cuenta de arrendatarios', (el, p) => {
     $('#aPay', el).onclick = () => openPagoArr({}, draw);
     $$('tr[data-a]', el).forEach(tr => tr.onclick = e => {
       const x = ec[tr.dataset.a]; const a = x.a;
+      if (e.target.dataset.solv !== undefined) { dlgSolvencia(x); return; }
       if (e.target.dataset.pay !== undefined) { openPagoArr({ arr_id: a._id, meses: x.pend.length ? x.pend : x.fut.slice(0, 1) }, draw); return; }
       if (e.target.dataset.carta !== undefined) { const tpl = Store.all('plantillas').find(t => /cobro/i.test(t.nombre)); const meses = x.pend.map(m => MESES[m - 1]).join(', '); go('d:generar', { id: tpl && tpl._id, datos: { destinatario: a.nombre, concepto: 'arrendamiento del ' + String(a.categoria || 'local').toLowerCase() + (a.espacio ? ' (' + a.espacio + ')' : ''), detalle: `Según nuestros registros, tiene pendiente(s) ${x.pend.length} mes(es) (${meses}) por un total de ${money(x.saldo)}, a razón de ${money(a.cuota)} mensuales.` } }); return; }
       if (!p.id) go('t:arrcuenta', { id: a._id }); else openForm('arrendatarios', a, { onDone: draw });
