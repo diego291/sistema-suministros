@@ -209,10 +209,12 @@ async function generarLote(titulo, filas, htmlDe, send, sub, body) {
   const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ').replace(':', '');
   const t = toast(`Generando PDF 0 de ${filas.length}…`, '', 600000);
   let folderId = '', folderUrl = '', files = [];
+  const armar = (f, h) => { const p = Store.get('personal', f.pid); const sec = tituloSec(f.x); const doc = p ? p.nombre : ''; const rep = x => String(x).replace(/\{seccion\}/g, sec).replace(/\{docente\}/g, doc || 'docente');
+    return { name: `${sec}${doc ? ' - ' + doc : ''} - ${titulo}`, html: pdfSeguro(h), email: send && p ? p.email || '' : '', subject: rep(sub || ''), body: rep(body || '') }; };
   try {
-    for (let i = 0; i < filas.length; i += 4) {
-      const items = filas.slice(i, i + 4).map(f => { const p = Store.get('personal', f.pid); const sec = tituloSec(f.x); const doc = p ? p.nombre : ''; const rep = s => String(s).replace(/\{seccion\}/g, sec).replace(/\{docente\}/g, doc || 'docente');
-        return { name: `${sec}${doc ? ' - ' + doc : ''} - ${titulo}`, html: pdfSeguro(htmlDe(f.x)), email: send && p ? p.email || '' : '', subject: rep(sub || ''), body: rep(body || '') }; });
+    for (let i = 0; i < filas.length; i += 2) {
+      const items = [];
+      for (const f of filas.slice(i, i + 2)) { const h = htmlDe(f.x); let pdf = ''; try { pdf = await htmlAPdfB64(h); } catch (e) { pdf = ''; } items.push(Object.assign(armar(f, h), { pdf })); }
       const r = await Sync.call({ action: 'pdfBatch', year: Store.year, folderId, folderName: `${titulo} ${stamp}`, css, items, send, sender: CFG.inst.area || 'Suministros' });
       folderId = r.folderId; folderUrl = r.folderUrl; files = files.concat(r.files);
       t.innerHTML = `Generando PDF ${files.length} de ${filas.length}…`;

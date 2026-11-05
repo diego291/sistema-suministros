@@ -29,7 +29,7 @@ var CHUNK = 45000; // tamaño máximo por celda al guardar la configuración
 function doGet(e) {
   var p = (e && e.parameter) || {};
   if (p.cb) return jsonp_(p);
-  if (p.ping) return json_({ ok: true, app: APP_NAME, api: 2, t: Date.now() });
+  if (p.ping) return json_({ ok: true, app: APP_NAME, api: 3, t: Date.now() });
   if (!p.clasico && props_().getProperty('REDIRIGIR') === 'si') return paginaRedirigir_();
   var t = HtmlService.createTemplateFromFile('Index');
   t.boot = JSON.stringify({ mode: 'gas', apiUrl: '', token: '' });
@@ -143,7 +143,7 @@ function dispatch_(req) {
       case 'init': return { ok: true, data: init_() };
       case 'sync': return { ok: true, data: sync_(req) };
       case 'createYear': return { ok: true, data: createYear_(req.year, req.copyFrom, req.copyMods || []) };
-      case 'savePdf': return { ok: true, data: savePdf_(req.html, req.name, req.year) };
+      case 'savePdf': return { ok: true, data: savePdf_(req.html, req.name, req.year, req.pdf) };
       case 'pdfBatch': return { ok: true, data: pdfBatch_(req) };
       case 'pdfZip': return { ok: true, data: pdfZip_(req.folderId, req.name) };
       case 'backup': return { ok: true, data: backup_() };
@@ -525,11 +525,13 @@ function compact_(year) {
 
 /* ======================= PDF, RESPALDOS, OFFLINE ======================= */
 
-function savePdf_(html, name, year) {
+function savePdf_(html, name, year, pdfB64) {
   var root = rootFolder_();
   var folder = subFolder_(subFolder_(root, 'Reportes PDF'), String(year || new Date().getFullYear()));
   var nombre = String(name || 'Reporte').replace(/[\\\/:*?"<>|]/g, '').substr(0, 120);
-  var blob = Utilities.newBlob(html, 'text/html', nombre + '.html').getAs('application/pdf').setName(nombre + '.pdf');
+  /* Si el navegador ya armó el PDF (idéntico a la impresión), se guarda tal cual; si no, Google convierte el HTML */
+  var blob = pdfB64 ? Utilities.newBlob(Utilities.base64Decode(pdfB64), 'application/pdf', nombre + '.pdf')
+    : Utilities.newBlob(html, 'text/html', nombre + '.html').getAs('application/pdf').setName(nombre + '.pdf');
   var f = folder.createFile(blob);
   return { url: f.getUrl(), name: f.getName() };
 }
@@ -546,7 +548,8 @@ function pdfBatch_(req) {
   (req.items || []).forEach(function (it) {
     var nombre = String(it.name || 'Reporte').replace(/[\\\/:*?"<>|]/g, '').substr(0, 120);
     var html = '<html><head><meta charset="utf-8"><style>' + (req.css || '') + '</style></head><body style="background:#fff">' + it.html + '</body></html>';
-    var blob = Utilities.newBlob(html, 'text/html', nombre + '.html').getAs('application/pdf').setName(nombre + '.pdf');
+    var blob = it.pdf ? Utilities.newBlob(Utilities.base64Decode(it.pdf), 'application/pdf', nombre + '.pdf')
+      : Utilities.newBlob(html, 'text/html', nombre + '.html').getAs('application/pdf').setName(nombre + '.pdf');
     var f = folder.createFile(blob);
     var enviado = false, error = '';
     if (req.send && it.email) {
