@@ -185,15 +185,21 @@ function estadoCtl(rb, prev, actual) {
   const cur = num(actual), lim = num(c.lim);
   const e = { c, din, cant, ult, ref, pasa: false, falta: 0, badge: '', cls: 'g', msg: '' };
   if (c.tipo === 'una') {
-    if (con.length) { e.badge = `✔ Ya pagado · ${ref}`; e.cls = 'e'; } else e.badge = 'Pendiente';
+    if (con.length) { e.badge = `✔ Ya pagado · ${ref}`; e.cls = 'g'; } else if (cur) { e.badge = '✔ Quedaría pagado con este recibo'; e.cls = 'g'; } else { e.badge = 'Pendiente'; e.cls = 'e'; }
     if (cur && con.length) { e.pasa = true; e.msg = `Ya pagó ${esc(rb.l)} el <b>${fdate(ult.fecha)}</b> en el recibo <b>${esc(recNum(ult))}</b>${con.length > 1 ? ` (y ${con.length - 1} vez/veces más)` : ''}.`; }
   } else if (c.tipo === 'cant') {
     e.falta = Math.max(0, r2(lim - cant));
-    e.badge = cant ? (e.falta ? `Lleva ${nfmt(cant)} de ${nfmt(lim)} · último ${ref}` : `✔ Completo (${nfmt(lim)}) · ${ref}`) : 'Pendiente'; e.cls = cant ? (e.falta ? 'w' : 'e') : 'g';
+    const tq = r2(cant + unid(cur)), fq = Math.max(0, r2(lim - tq));
+    if (cur) { e.badge = tq > lim ? `Quedaría ${nfmt(tq)} de ${nfmt(lim)} · se pasa` : fq ? `Quedaría ${nfmt(tq)} de ${nfmt(lim)} · faltan ${nfmt(fq)}` : `✔ Quedaría completo (${nfmt(lim)})`; e.cls = tq > lim ? 'e' : fq ? 'w' : 'g'; }
+    else { e.badge = cant ? (e.falta ? `Lleva ${nfmt(cant)} de ${nfmt(lim)} · último ${ref}` : `✔ Completo (${nfmt(lim)}) · ${ref}`) : `Pendiente · ${nfmt(lim)}`; e.cls = cant ? (e.falta ? 'w' : 'g') : 'e'; }
     const tot = r2(cant + unid(cur)); if (cur && tot > lim) { e.pasa = true; e.msg = `Ya lleva <b>${nfmt(cant)}</b> de ${nfmt(lim)}. Con este recibo serían <b>${nfmt(tot)}</b>: se pasa por <b>${nfmt(r2(tot - lim))}</b>.`; }
   } else if (c.tipo === 'dinero') {
     e.falta = Math.max(0, r2(lim - din)); const mesTxt = rb.meses && num(rb.p) && e.falta ? ` (${nfmt(r2(e.falta / num(rb.p)))} ${r2(e.falta / num(rb.p)) === 1 ? 'mes' : 'meses'})` : '';
-    e.badge = din ? (e.falta ? `Pagado ${money(din)} · faltan ${money(e.falta)}${mesTxt}` : `✔ Completo (${money(lim)}) · ${ref}`) : `Pendiente · ${money(lim)}`; e.cls = din ? (e.falta ? 'w' : 'e') : 'g';
+    /* Meses primero y luego el dinero; mientras se escribe el monto muestra cómo quedaría. */
+    const pm = rb.meses && num(rb.p), mt = v => { if (!pm) return money(v); const m = r2(v / num(rb.p)); return `${nfmt(m)} ${m === 1 ? 'mes' : 'meses'} (${money(v)})`; };
+    const tq = r2(din + cur), fq = Math.max(0, r2(lim - tq));
+    if (cur) { e.badge = tq > lim + 0.004 ? `Quedaría ${mt(tq)} · se pasa ${money(r2(tq - lim))}` : fq ? `Quedaría pagado ${mt(tq)} · faltan ${mt(fq)}` : `✔ Quedaría completo: ${mt(lim)}`; e.cls = tq > lim + 0.004 ? 'e' : fq ? 'w' : 'g'; }
+    else { e.badge = din ? (e.falta ? `Pagado ${mt(din)} · faltan ${mt(e.falta)}` : `✔ Completo: ${mt(lim)} · ${ref}`) : `Pendiente · ${mt(lim)}`; e.cls = din ? (e.falta ? 'w' : 'g') : 'e'; }
     const tot = r2(din + cur); if (cur && tot > lim + 0.004) { e.pasa = true; e.msg = `Ya lleva <b>${money(din)}</b> de ${money(lim)}. Con este pago serían <b>${money(tot)}</b>: se pasa por <b>${money(r2(tot - lim))}</b>.${e.falta ? ` Solo faltan ${money(e.falta)}${mesTxt}.` : ' Ya estaba completo.'}`; }
   }
   return e;
