@@ -11,7 +11,8 @@ Sistema administrativo del área de suministros. Cubre recibos de ingreso, alime
 ## Estructura
 | Carpeta | Contenido |
 |---|---|
-| `fuente/apps-script/` | **Fuente única.** Son los 10 archivos del proyecto de Apps Script (`Code.gs`, `Index`, `Styles`, `AppCore`, `AppModules`, `AppHome`, `AppReports`, `AppOps`, `AppConfig`, `appsscript.json`). Se copian tal cual al editor de Apps Script. |
+| `fuente/apps-script/` | Los 10 archivos del proyecto de Apps Script. `Code.gs` es el **cargador**: se pega una sola vez. Los HTML son la fuente de la web y de la versión clásica. |
+| `fuente/servidor/Nucleo.gs` | **El servidor.** No se pega en Apps Script: el cargador lo descarga solo de GitHub (revisa cada 5 min) y guarda copia en Drive. |
 | `fuente/web/` | Lo propio de la web: `config.json` (URL de la API, **sin clave**), `sw.js` (service worker), `pwa.js` e íconos. |
 | `herramientas/build_web.py` | Arma `sitio/` (la web) a partir de `fuente/`. Lo ejecuta GitHub Actions en cada cambio. |
 | `.github/workflows/pages.yml` | Publica automáticamente en GitHub Pages al subir cambios a `main`. |
@@ -22,13 +23,20 @@ Sistema administrativo del área de suministros. Cubre recibos de ingreso, alime
 [Navegador / app instalada]  --fetch POST text/plain {action, token, ...}-->  [Apps Script /exec]  -->  [Google Sheets en Drive]
    IndexedDB (copia local + cola sin conexión)            <-- JSON {ok, data} --
 ```
-- **Acciones de la API (`dispatch_` en `Code.gs`):** `ping`, `init`, `sync`, `createYear`, `savePdf`, `pdfBatch`, `pdfZip`, `backup`, `compact`, `offlineHtml`, `triggers`, `users`, `newToken`.
+- **Acciones de la API (`dispatch_` en `Nucleo.gs`):** `ping`, `init`, `sync`, `createYear`, `savePdf`, `pdfBatch`, `pdfZip`, `backup`, `compact`, `offlineHtml`, `triggers`, `users`, `newToken`.
 - **Si el navegador bloquea `fetch`:** la app usa la conexión alternativa JSONP (`doGet?cb=`).
 - **Triggers:** los recordatorios cada 15 min, el resumen diario y el respaldo de los viernes viven en Apps Script y no dependen de la web.
 - **Seguridad:**
   - Clave `API_TOKEN` en las Script Properties.
   - Bloqueo de 10 minutos tras 30 claves equivocadas.
   - La clave nunca va en el repositorio. `build_web.py` revisa que no se publiquen claves ni datos.
+
+## Cargador del servidor
+- Cambiar el servidor = editar `fuente/servidor/Nucleo.gs`, subir `API_VERSION` y subir a `main`. **No** hay que pegar nada ni crear versión nueva de la implementación.
+- El cargador solo adopta un núcleo que compila y trae `dispatch_`, `doPost` y `API_VERSION`. Si GitHub falla, usa la copia de Drive (`SISTEMA SUMINISTROS/Código del sistema`).
+- `?ping=1` responde `api` (versión del núcleo) y `cargador`.
+- Volver atrás: propiedad del script `GH_REF` = commit. Borrarla vuelve a `main`.
+- Solo se vuelve a pegar `Code.gs` si cambia el cargador, o los HTML si se quiere actualizar la versión clásica (`?clasico=1`).
 
 ## Modos del cliente (`window.__BOOT.mode`)
 - `gas`: abierta desde la URL `/exec` de Apps Script. Usa `google.script.run`.
