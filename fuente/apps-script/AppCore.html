@@ -954,25 +954,39 @@ const pdfDoc = body => `<html><head><meta charset="utf-8"><style>${PDF_BASE_CSS}
    Se usa para "PDF en Drive" y "PDF individuales"; el conversor de Google pierde fondos y colores. */
 const cargarJs = src => new Promise((ok, mal) => { if (document.querySelector(`script[src="${src}"]`)) { const t = setInterval(() => { if (window.jspdf && window.html2canvas) { clearInterval(t); ok(); } }, 50); setTimeout(() => { clearInterval(t); ok(); }, 8000); return; } const sc = document.createElement('script'); sc.src = src; sc.onload = ok; sc.onerror = () => mal(new Error('No se pudo cargar ' + src)); document.head.appendChild(sc); });
 async function libsPdf() { if (!window.html2canvas) await cargarJs('https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js'); if (!window.jspdf) await cargarJs('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js'); }
+/* Calidad del PDF: 1.6 ≈ 155 ppp (nítido al imprimir) y mucho más liviano que 2 (≈ 40 % menos píxeles). */
+const PDF_ESCALA = 1.6, PDF_JPG = 0.85;
+/** Dibuja las hojas dentro de un marco aislado: html2canvas copia SOLO ese marco y no toda la app
+ *  (con muchas tablas abiertas, copiar la app era lo que más tardaba). Mismos estilos que la impresión. */
+async function marcoPdf(html) {
+  const fr = document.createElement('iframe');
+  fr.setAttribute('aria-hidden', 'true'); fr.style.cssText = 'position:fixed;left:-20000px;top:0;width:1200px;height:1600px;border:0;visibility:hidden';
+  document.body.appendChild(fr);
+  const d = fr.contentDocument, est = $$('style,link[rel="stylesheet"]', document.head).map(x => x.outerHTML).join('');
+  d.open(); d.write(`<!doctype html><html class="${esc(document.documentElement.className)}" data-theme="light"><head><meta charset="utf-8">${est}</head><body style="margin:0;background:#fff">${html}</body></html>`); d.close();
+  d.querySelectorAll('.page').forEach(pg => { if (pg.querySelector('.memb') && !pg.querySelector('.pfoot')) pg.insertAdjacentHTML('beforeend', pfoot()); pg.style.boxShadow = 'none'; pg.style.margin = '0'; });
+  const imgs = [...d.images].filter(i => !i.complete).map(i => new Promise(r => { i.onload = i.onerror = r; }));
+  await Promise.race([Promise.all([...imgs, d.fonts ? d.fonts.ready : 0]), new Promise(r => setTimeout(r, 4000))]);
+  return fr;
+}
 async function htmlAPdfB64(html) {
   await libsPdf();
-  const host = document.createElement('div'); host.style.cssText = 'position:fixed;left:-20000px;top:0;background:#fff;z-index:-1'; host.innerHTML = html; document.body.appendChild(host);
-  host.querySelectorAll('.page').forEach(pg => { if (pg.querySelector('.memb') && !pg.querySelector('.pfoot')) pg.insertAdjacentHTML('beforeend', pfoot()); pg.style.boxShadow = 'none'; pg.style.margin = '0'; });
-  await new Promise(r => setTimeout(r, 60));
+  const fr = await marcoPdf(html);
   const { jsPDF } = window.jspdf; let doc = null;
   try {
-    for (const pg of host.querySelectorAll('.page')) {
+    for (const pg of fr.contentDocument.querySelectorAll('.page')) {
       const land = pg.classList.contains('land');
-      const cv = await window.html2canvas(pg, { scale: 2, backgroundColor: '#ffffff', useCORS: true, logging: false, windowWidth: pg.scrollWidth });
+      const cv = await window.html2canvas(pg, { scale: PDF_ESCALA, backgroundColor: '#ffffff', useCORS: true, logging: false, windowWidth: pg.scrollWidth });
       const W = land ? 279.4 : 215.9, Hp = land ? 215.9 : 279.4, h = cv.height * W / cv.width;
       if (!doc) doc = new jsPDF({ orientation: land ? 'landscape' : 'portrait', unit: 'mm', format: 'letter', compress: true }); else doc.addPage('letter', land ? 'landscape' : 'portrait');
       /* Si la hoja es más larga que una carta, se reparte en varias páginas */
-      const img = cv.toDataURL('image/jpeg', 0.92);
+      const img = cv.toDataURL('image/jpeg', PDF_JPG);
       if (h <= Hp + 0.5) doc.addImage(img, 'JPEG', 0, 0, W, h);
       else if (h <= Hp * 1.4) { const k = Hp / h; doc.addImage(img, 'JPEG', (W - W * k) / 2, 0, W * k, Hp); } /* un poco más larga: se reduce para que quepa en una hoja */
       else { let y = 0, first = true; while (y < h - 0.5) { if (!first) doc.addPage('letter', land ? 'landscape' : 'portrait'); doc.addImage(img, 'JPEG', 0, -y, W, h); y += Hp; first = false; } }
+      cv.width = cv.height = 0;
     }
-  } finally { host.remove(); }
+  } finally { fr.remove(); }
   return doc ? doc.output('datauristring').split(',')[1] : '';
 }
 /* ======================= Impresión ======================= */
@@ -1020,7 +1034,7 @@ const Print = {
   async drive() {
     const t = toast('Generando PDF en Drive…', '', 60000);
     let pdf = ''; try { pdf = await htmlAPdfB64($('#printRoot').innerHTML); } catch (e) { pdf = ''; }
-    const html = pdfDoc(pdfSeguro($('#printRoot').innerHTML));
+    const html = pdf ? '' : pdfDoc(pdfSeguro($('#printRoot').innerHTML)); /* con PDF listo no hace falta subir el HTML */
     try { const r = await Sync.call({ action: 'savePdf', html, pdf, name: this.title + ' ' + new Date().toISOString().slice(0, 16).replace('T', ' ').replace(':', ''), year: Store.year }); t.remove(); toast(`PDF guardado en Drive: <a href="${r.url}" target="_blank" style="color:#fff;text-decoration:underline">abrir</a>`, 'ok', 9000); }
     catch (e) { t.remove(); toast('No se pudo crear el PDF en Drive (requiere conexión). Use "Imprimir / Guardar PDF".', 'bad', 6000); }
   }

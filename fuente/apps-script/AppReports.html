@@ -213,13 +213,23 @@ async function generarLote(titulo, filas, htmlDe, send, sub, body) {
   const armar = (f, h) => { const p = Store.get('personal', f.pid); const sec = tituloSec(f.x); const doc = p ? p.nombre : ''; const rep = x => String(x).replace(/\{seccion\}/g, sec).replace(/\{docente\}/g, doc || 'docente');
     return { name: `${sec}${doc ? ' - ' + doc : ''} - ${titulo}`, html: pdfSeguro(h), email: send && p ? p.email || '' : '', subject: rep(sub || ''), body: rep(body || '') }; };
   try {
-    for (let i = 0; i < filas.length; i += 2) {
-      const items = [];
-      for (const f of filas.slice(i, i + 2)) { const h = htmlDe(f.x); let pdf = ''; try { pdf = await htmlAPdfB64(h); } catch (e) { pdf = ''; } items.push(Object.assign(armar(f, h), { pdf })); }
-      const r = await Sync.call({ action: 'pdfBatch', year: Store.year, folderId, folderName: `${titulo} ${stamp}`, css, items, send, sender: CFG.inst.area || 'Suministros' });
-      folderId = r.folderId; folderUrl = r.folderUrl; files = files.concat(r.files);
-      t.innerHTML = `Generando PDF ${files.length} de ${filas.length}…`;
+    /* Mientras se suben unos PDF a Drive se van dibujando los siguientes (antes era uno tras otro).
+       El primer envío crea la carpeta; después se suben hasta 3 a la vez. */
+    const res = new Array(filas.length); let listos = 0, enCurso = [];
+    const subir = async (i, it) => {
+      const r = await Sync.call({ action: 'pdfBatch', year: Store.year, folderId, folderName: `${titulo} ${stamp}`, css: it.pdf ? '' : css, items: [it], send, sender: CFG.inst.area || 'Suministros' });
+      folderId = r.folderId; folderUrl = r.folderUrl; res[i] = r.files[0]; listos++;
+      t.innerHTML = `Generando PDF ${listos} de ${filas.length}…`;
+    };
+    for (let i = 0; i < filas.length; i++) {
+      const f = filas[i], h = htmlDe(f.x); let pdf = ''; try { pdf = await htmlAPdfB64(h); } catch (e) { pdf = ''; }
+      const it = Object.assign(armar(f, pdf ? '' : h), { pdf });
+      if (!folderId) { await subir(i, it); continue; }
+      const pr = subir(i, it).finally(() => { enCurso = enCurso.filter(x => x !== pr); }); enCurso.push(pr);
+      if (enCurso.length >= 3) await Promise.race(enCurso);
     }
+    await Promise.all(enCurso);
+    files = res.filter(Boolean);
     t.innerHTML = 'Comprimiendo en .zip…';
     const z = await Sync.call({ action: 'pdfZip', folderId, name: titulo });
     t.remove();
