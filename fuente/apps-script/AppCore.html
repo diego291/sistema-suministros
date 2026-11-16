@@ -371,17 +371,25 @@ const Sync = {
     this.mode = this.url ? 'http' : 'local';
   },
   call(req) {
-    req = Object.assign({}, req, { token: this.token });
+    /* req._alt = versión liviana del mismo envío (sin el PDF) para la conexión alternativa, que viaja en partes por la URL. */
+    const alt = req._alt ? Object.assign({}, req._alt, { token: this.token }) : null;
+    req = Object.assign({}, req, { token: this.token }); delete req._alt;
     if (this.mode === 'gas') return new Promise((res, rej) => {
       google.script.run.withSuccessHandler(r => r && r.ok ? res(r.data) : rej(r || { error: 'Sin respuesta' }))
         .withFailureHandler(e => rej({ error: String(e && e.message || e) })).apiCall(req);
     });
     if (this.mode === 'http') {
-      if (this.transport === 'jsonp') return jsonpCall(this.url, req);
+      if (this.transport === 'jsonp') {
+        /* Envíos grandes (PDF): por la conexión alternativa serían cientos de partes y parecía congelado.
+           Se intenta primero la conexión normal; si funciona, se vuelve a usar siempre. */
+        if (alt || JSON.stringify(req).length > 30000) return this.fetchCall(req).then(r => { this.transport = 'fetch'; LS.set('transport', 'fetch'); return r; },
+          e => e && e.error === 'NET' ? jsonpCall(this.url, alt || req) : Promise.reject(e));
+        return jsonpCall(this.url, req);
+      }
       return this.fetchCall(req).catch(e => {
         if (!e || e.error !== 'NET' || !navigator.onLine) return Promise.reject(e);
         const usar = () => { this.transport = 'jsonp'; LS.set('transport', 'jsonp'); };
-        return jsonpCall(this.url, { action: 'ping', token: this.token }).then(() => { usar(); return jsonpCall(this.url, req); }, e2 => { if (e2 && e2.error === 'AUTH') { usar(); return Promise.reject(e2); } return Promise.reject(e); });
+        return jsonpCall(this.url, { action: 'ping', token: this.token }).then(() => { usar(); return jsonpCall(this.url, alt || req); }, e2 => { if (e2 && e2.error === 'AUTH') { usar(); return Promise.reject(e2); } return Promise.reject(e); });
       });
     }
     return Promise.reject({ error: 'LOCAL' });
@@ -969,7 +977,11 @@ async function marcoPdf(html) {
   await Promise.race([Promise.all([...imgs, d.fonts ? d.fonts.ready : 0]), new Promise(r => setTimeout(r, 4000))]);
   return fr;
 }
-async function htmlAPdfB64(html) {
+/** Igual que htmlAPdfB64Base pero nunca se queda colgado: si tarda más de 90 s, sigue sin PDF (Drive lo convierte del HTML). */
+function htmlAPdfB64(html, ms = 90000) {
+  return Promise.race([htmlAPdfB64Base(html), new Promise((_, no) => setTimeout(() => no(new Error('El PDF tardó demasiado en dibujarse')), ms))]);
+}
+async function htmlAPdfB64Base(html) {
   await libsPdf();
   const fr = await marcoPdf(html);
   const { jsPDF } = window.jspdf; let doc = null;
@@ -1034,8 +1046,8 @@ const Print = {
   async drive() {
     const t = toast('Generando PDF en Drive…', '', 60000);
     let pdf = ''; try { pdf = await htmlAPdfB64($('#printRoot').innerHTML); } catch (e) { pdf = ''; }
-    const html = pdf ? '' : pdfDoc(pdfSeguro($('#printRoot').innerHTML)); /* con PDF listo no hace falta subir el HTML */
-    try { const r = await Sync.call({ action: 'savePdf', html, pdf, name: this.title + ' ' + new Date().toISOString().slice(0, 16).replace('T', ' ').replace(':', ''), year: Store.year }); t.remove(); toast(`PDF guardado en Drive: <a href="${r.url}" target="_blank" style="color:#fff;text-decoration:underline">abrir</a>`, 'ok', 9000); }
+    const html = pdfDoc(pdfSeguro($('#printRoot').innerHTML)), nm = this.title + ' ' + new Date().toISOString().slice(0, 16).replace('T', ' ').replace(':', '');
+    try { const r = await Sync.call({ action: 'savePdf', html: pdf ? '' : html, pdf, _alt: pdf ? { action: 'savePdf', html, pdf: '', name: nm, year: Store.year } : null, name: this.title + ' ' + new Date().toISOString().slice(0, 16).replace('T', ' ').replace(':', ''), year: Store.year }); t.remove(); toast(`PDF guardado en Drive: <a href="${r.url}" target="_blank" style="color:#fff;text-decoration:underline">abrir</a>`, 'ok', 9000); }
     catch (e) { t.remove(); toast('No se pudo crear el PDF en Drive (requiere conexión). Use "Imprimir / Guardar PDF".', 'bad', 6000); }
   }
 };

@@ -208,7 +208,7 @@ function pdfIndividuales(titulo, lst, htmlDe) {
 async function generarLote(titulo, filas, htmlDe, send, sub, body) {
   const css = PDF_BASE_CSS;
   const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ').replace(':', '');
-  const t = toast(`Generando PDF 0 de ${filas.length}…`, '', 600000);
+  const t = toast(`Preparando ${filas.length} PDF…`, '', 1800000);
   let folderId = '', folderUrl = '', files = [];
   const armar = (f, h) => { const p = Store.get('personal', f.pid); const sec = tituloSec(f.x); const doc = p ? p.nombre : ''; const rep = x => String(x).replace(/\{seccion\}/g, sec).replace(/\{docente\}/g, doc || 'docente');
     return { name: `${sec}${doc ? ' - ' + doc : ''} - ${titulo}`, html: pdfSeguro(h), email: send && p ? p.email || '' : '', subject: rep(sub || ''), body: rep(body || '') }; };
@@ -216,16 +216,18 @@ async function generarLote(titulo, filas, htmlDe, send, sub, body) {
     /* Mientras se suben unos PDF a Drive se van dibujando los siguientes (antes era uno tras otro).
        El primer envío crea la carpeta; después se suben hasta 3 a la vez. */
     const res = new Array(filas.length); let listos = 0, enCurso = [];
-    const subir = async (i, it) => {
-      const r = await Sync.call({ action: 'pdfBatch', year: Store.year, folderId, folderName: `${titulo} ${stamp}`, css: it.pdf ? '' : css, items: [it], send, sender: CFG.inst.area || 'Suministros' });
+    const subir = async (i, it, h) => {
+      const base = { action: 'pdfBatch', year: Store.year, folderId, folderName: `${titulo} ${stamp}`, send, sender: CFG.inst.area || 'Suministros' };
+      const r = await Sync.call(Object.assign({}, base, { css: it.pdf ? '' : css, items: [it], _alt: it.pdf ? Object.assign({}, base, { css, items: [Object.assign({}, it, { pdf: '', html: pdfSeguro(h) })] }) : null }));
       folderId = r.folderId; folderUrl = r.folderUrl; res[i] = r.files[0]; listos++;
-      t.innerHTML = `Generando PDF ${listos} de ${filas.length}…`;
+      t.innerHTML = `Subidos a Drive ${listos} de ${filas.length}…`;
     };
     for (let i = 0; i < filas.length; i++) {
+      t.innerHTML = `Dibujando PDF ${i + 1} de ${filas.length}${listos ? ` · subidos ${listos}` : ''}…`;
       const f = filas[i], h = htmlDe(f.x); let pdf = ''; try { pdf = await htmlAPdfB64(h); } catch (e) { pdf = ''; }
       const it = Object.assign(armar(f, pdf ? '' : h), { pdf });
-      if (!folderId) { await subir(i, it); continue; }
-      const pr = subir(i, it).finally(() => { enCurso = enCurso.filter(x => x !== pr); }); enCurso.push(pr);
+      if (!folderId) { t.innerHTML = `Subiendo a Drive 1 de ${filas.length}…`; await subir(i, it, h); continue; }
+      const pr = subir(i, it, h).finally(() => { enCurso = enCurso.filter(x => x !== pr); }); enCurso.push(pr);
       if (enCurso.length >= 3) await Promise.race(enCurso);
     }
     await Promise.all(enCurso);
