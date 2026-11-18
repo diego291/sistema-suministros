@@ -779,10 +779,11 @@ function renderList(mod, el, p = {}) {
     for (const id of [...sel]) { const r = Store.get(mod, id); if (!r || r._del) sel.delete(id); }
     if (!sel.size) { box.innerHTML = ''; return; }
     const faltan = rowsF.filter(r => !sel.has(r._id)).length;
-    box.innerHTML = `<div class="selbar"><b>${sel.size.toLocaleString()} seleccionado(s)</b>${faltan ? `<button class="btn sm" id="lsAll">Seleccionar los ${rowsF.length.toLocaleString()} filtrados</button>` : ''}<button class="btn sm" id="lsNone">Quitar selección</button><span class="sp"></span><button class="btn sm" id="lsExp">⬇️ Exportar selección</button><button class="btn sm danger" id="lsDel">🗑️ Eliminar seleccionados</button></div>`;
+    box.innerHTML = `<div class="selbar"><b>${sel.size.toLocaleString()} seleccionado(s)</b>${faltan ? `<button class="btn sm" id="lsAll">Seleccionar los ${rowsF.length.toLocaleString()} filtrados</button>` : ''}<button class="btn sm" id="lsNone">Quitar selección</button><span class="sp"></span>${def.noBulkEdit ? '' : '<button class="btn sm pri" id="lsEdit">✏️ Editar en tabla</button>'}<button class="btn sm" id="lsExp">⬇️ Exportar selección</button><button class="btn sm danger" id="lsDel">🗑️ Eliminar seleccionados</button></div>`;
     const a = $('#lsAll', box); if (a) a.onclick = () => { rowsF.forEach(r => sel.add(r._id)); draw(); };
     $('#lsNone', box).onclick = () => { sel.clear(); draw(); };
     $('#lsExp', box).onclick = () => exportRows(mod, rowsF.filter(r => sel.has(r._id)));
+    const be = $('#lsEdit', box); if (be) be.onclick = () => editarEnTabla(mod, rowsF.filter(r => sel.has(r._id)), () => refresh());
     $('#lsDel', box).onclick = async () => {
       const rows = [...sel].map(id => Store.get(mod, id)).filter(Boolean);
       if (!rows.length) return;
@@ -828,6 +829,49 @@ function renderList(mod, el, p = {}) {
 }
 
 /* Borrado en lote (con efectos relacionados por módulo, ej. recibos → ventas de uniformes) */
+/* ======================= Editar varios registros en tabla ======================= */
+const BULK_T = { date: 1, text: 1, select: 1, number: 1, money: 1, ref: 1, time: 1 };
+function camposTabla(mod) {
+  const def = MOD[mod], fs = fieldsOf(mod);
+  if (def.bulkEdit) return def.bulkEdit.map(k => fs.find(f => f.k === k)).filter(Boolean);
+  return fs.filter(f => BULK_T[f.t] && !f.hide && !f.ro).slice(0, 8);
+}
+const valCmp = (f, v) => f.t === 'date' ? toYMD(v || '') : NUM_T[f.t] ? (v === '' || v === undefined || v === null ? '' : num(v)) : String(v ?? '').trim();
+function editarEnTabla(mod, rows, onDone) {
+  const def = MOD[mod], fs = camposTabla(mod), MAX = 200;
+  if (!rows.length) return;
+  if (rows.length > MAX) { toast(`Seleccione hasta ${MAX} registros para editarlos en tabla (tiene ${rows.length.toLocaleString()}).`, 'bad', 5000); return; }
+  const ancho = f => f.t === 'date' ? 'width:138px' : NUM_T[f.t] ? 'width:90px' : f.t === 'select' ? 'width:130px' : /concepto|detalle|descripcion|nombre/i.test(f.k) ? 'min-width:230px' : 'width:110px';
+  const html = `<p class="muted" style="margin:0 0 8px">Cambie lo que necesite en cada fila; lo modificado se marca en amarillo. Se guarda todo junto.</p>
+    <div style="overflow:auto;max-height:62vh"><table class="t bulked"><thead><tr>${fs.map(f => `<th style="${ancho(f)}">${esc(f.l)}</th>`).join('')}</tr></thead>
+    <tbody>${rows.map(r => `<tr data-id="${r._id}">${fs.map(f => `<td>${inputHtml(f, r[f.k] ?? '')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
+    <p style="margin:10px 0 0" id="beInfo"><b>0 cambio(s)</b>.</p>`;
+  const cambios = () => { const out = []; $$('#modal tr[data-id]').forEach(tr => { const r = rows.find(x => x._id === tr.dataset.id); const d = {}; fs.forEach(f => { const v = readField(f, tr); if (v !== undefined && valCmp(f, v) !== valCmp(f, r[f.k])) d[f.k] = v; }); if (Object.keys(d).length) out.push({ r, d, tr }); }); return out; };
+  const pintar = () => { let n = 0; $$('#modal tr[data-id]').forEach(tr => { const r = rows.find(x => x._id === tr.dataset.id); fs.forEach(f => { const el = $('#f_' + f.k, tr); if (!el) return; const ch = valCmp(f, readField(f, tr)) !== valCmp(f, r[f.k]); el.classList.toggle('chg', ch); if (ch) n++; }); });
+    const filas = cambios().length, info = $('#beInfo'); if (info) info.innerHTML = `<b>${n} cambio(s)</b> en ${filas} registro(s).${def.bulkNote ? ' ' + def.bulkNote : ''}`;
+    const bt = $('#modal .mf .btn.pri'); if (bt) bt.textContent = n ? `Guardar ${n} cambio(s)` : 'Guardar'; };
+  const guardar = async () => {
+    const cs = cambios(); if (!cs.length) { toast('No hay cambios'); return true; }
+    const listos = [];
+    for (const { r, d, tr } of cs) {
+      const n = Object.assign({}, r, d);
+      for (const f of fs) if (f.req && (n[f.k] === '' || n[f.k] === undefined || n[f.k] === null)) { toast(`Falta: ${f.l}`, 'bad'); const el = $('#f_' + f.k, tr); el && el.focus(); return false; }
+      if (def.validate) { const msg = def.validate(n, false); if (msg && !msg.startsWith('?')) { toast(msg, 'bad', 5000); tr.scrollIntoView({ block: 'center' }); return false; } }
+      if (def.beforeSave) def.beforeSave(n);
+      listos.push(n);
+    }
+    const saved = await Store.saveMany(mod, listos);
+    if (def.afterSave) for (const x of saved) await def.afterSave(x, false);
+    toast(`✔ ${saved.length} registro(s) actualizados`, 'ok');
+    onDone && onDone(saved); return true;
+  };
+  modal(`✏️ Editar ${rows.length} registro(s) · ${esc(modLabel(mod))}`, html, [{ l: 'Cancelar' }, { l: 'Guardar', pri: 1, fn: guardar }]);
+  const box = $('#modal .box'); if (box) box.style.width = 'min(1240px,100%)';
+  $$('#modal tr[data-id]').forEach(tr => fs.filter(f => f.t === 'ref').forEach(f => { const inp = $('#f_' + f.k, tr); if (inp) attachAC(inp, REF[f.ref] || (() => []), it => { if (f.fill) for (const dst in f.fill) { const el = $('#f_' + dst, tr); if (el) { const v = typeof f.fill[dst] === 'function' ? f.fill[dst](it.row) : it.row[f.fill[dst]]; el.value = v ?? ''; } } pintar(); }); }));
+  const mb = $('#modal .mb'); if (mb) { mb.addEventListener('input', pintar); mb.addEventListener('change', pintar); }
+  pintar();
+}
+
 async function bulkDelete(mod, rows) {
   const def = MOD[mod];
   for (let i = 0; i < rows.length; i += 500) await Store.saveMany(mod, rows.slice(i, i + 500).map(r => Object.assign({}, r, { _del: 1 })));

@@ -925,6 +925,8 @@ function dispTalla(prod, talla) {
 /* Borrar recibos en lote también quita sus ventas de uniformes */
 MOD.recibos.afterDelete = async rows => { for (const r of rows) if ((r.unif || []).length) await syncVentasRecibo(Object.assign({}, r, { _del: 1 })); };
 MOD.recibos.afterRestore = async rows => { for (const r of rows) if ((r.unif || []).length) await syncVentasRecibo(Object.assign({}, r, { _del: 0 })); };
+MOD.cajachica.bulkEdit = ['fecha', 'tipo', 'categoria', 'comprobante', 'documento', 'concepto', 'proveedor', 'debe', 'haber'];
+MOD.cajachica.bulkNote = 'El saldo y las cajas se recalculan al guardar.';
 MOD.unif_ventas.bulkWarn = rows => rows.some(r => r.rec_id) ? '⚠ Algunas ventas vienen de un recibo: si vuelve a guardar ese recibo, se crearán de nuevo. Para quitarlas del todo, quite la fila de uniformes en el recibo.' : '';
 
 /* ---------------- AGENDA ---------------- */
