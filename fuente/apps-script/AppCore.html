@@ -710,7 +710,7 @@ function renderList(mod, el, p = {}) {
   const fm = fieldMap(mod);
   const save = () => LS.set('list_' + mod, { sort: state.sort, f: state.f, desde: state.desde, hasta: state.hasta, qk: state.qk });
   const cols = () => { const fs = fieldsOf(mod); let c = (def.table || []).map(k => fm[k]).filter(Boolean).filter(f => f.tabla !== false && !f.hide); fs.filter(f => f.custom && f.tabla !== false && !f.hide && !c.includes(f)).forEach(f => c.push(f)); fs.filter(f => f.tabla === true && !c.includes(f)).forEach(f => c.push(f)); return c.length ? c : fs.filter(f => !f.hide && f.t !== 'items').slice(0, 8); };
-  const filt = def.filters || [];
+  const filt = def.filters || [], bulk0 = !def.noBulk;
   el.innerHTML = `${def.intro ? `<div class="alert info">${def.intro}</div>` : ''}
   <div class="bar">
     ${def.ficha ? `<div class="chips lmode"><span class="chip ${MODO_FICHA[mod] ? '' : 'on'}" data-lm="lista">📋 ${esc(mod === 'recibos' ? 'Recibos' : 'Lista')}</span><span class="chip ${MODO_FICHA[mod] ? 'on' : ''}" data-lm="ficha">🎓 Consultar alumno</span></div>` : ''}
@@ -720,6 +720,7 @@ function renderList(mod, el, p = {}) {
     ${filt.map(k => { const f = fm[k]; if (!f) return ''; const vals = (f.t === 'select' || f.o ? optsOf(f) : [...new Set(Store.all(mod).map(r => r[k]).filter(x => x !== '' && x !== undefined))].sort()).map(o => typeof o === 'object' ? o : { v: o, l: o }); return `<select class="in" data-fk="${k}"><option value="">${esc(f.l)}: todos</option>${vals.map(o => `<option value="${esc(o.v)}" ${String(state.f[k] || '') === String(o.v) ? 'selected' : ''}>${esc(o.l)}</option>`).join('')}</select>`; }).join('')}
     ${def.dateField ? `<input type="date" class="in" id="ld1" value="${state.desde}" title="Desde"><input type="date" class="in" id="ld2" value="${state.hasta}" title="Hasta">
       <select class="in" id="lper"><option value="">Período…</option><option value="hoy">Hoy</option><option value="sem">Últimos 7 días</option><option value="mes">Este mes</option><option value="mesant">Mes anterior</option><option value="todo">Todo el año</option></select>` : ''}
+    ${def.selectBy && bulk0 ? `<select class="in" id="lsb" title="Muestra y selecciona todos los registros de ese grupo, sin importar los demás filtros"><option value="">${esc(def.selectBy.l)}…</option></select>` : ''}
     <span class="sp"></span>
     ${(def.listButtons || []).map((b, i) => `<button class="btn" data-lb="${i}">${b.l}</button>`).join('')}
     <button class="btn" id="lexp" title="Exportar a Excel">⬇️ Exportar</button>
@@ -742,7 +743,8 @@ function renderList(mod, el, p = {}) {
     let rows = Store.all(mod);
     if (def.prepare) def.prepare(rows);
     if (def.baseFilter) rows = rows.filter(def.baseFilter);
-    rowsF = rows.filter(r => {
+    if (def.selectBy && state.sb) { const v = def.selectBy.val; rowsF = rows.filter(r => !r._del && String(v(r) ?? '') === state.sb); }
+    else rowsF = rows.filter(r => {
       for (const k in state.f) if (state.f[k] && String(r[k] ?? '') !== String(state.f[k])) return false;
       if (def.quick && state.qk !== '' && state.qk !== undefined && def.quick[state.qk] && !def.quick[state.qk].fn(r)) return false;
       if (def.dateField && (state.desde || state.hasta)) { const d = toYMD(r[def.dateField]); if (state.desde && d < state.desde) return false; if (state.hasta && d > state.hasta) return false; }
@@ -794,7 +796,12 @@ function renderList(mod, el, p = {}) {
       const ub = $('button', t); if (ub) ub.onclick = async () => { t.remove(); await bulkRestore(mod, rows); refresh(); toast('Se restauraron ' + rows.length + ' registro(s)', 'ok'); };
     };
   };
-  const refresh = () => { compute(); draw(); };
+  /* "Seleccionar caja": muestra el grupo completo (sin filtros) y lo deja seleccionado */
+  const pintarSB = () => { const s = $('#lsb', el); if (!s) return; const c = {}; Store.all(mod).forEach(r => { if (r._del) return; const v = def.selectBy.val(r); if (v) c[v] = (c[v] || 0) + 1; });
+    const ks = Object.keys(c).sort((a, b) => String(b).localeCompare(String(a), 'es', { numeric: true }));
+    s.innerHTML = `<option value="">${esc(def.selectBy.l)}…</option>${ks.map(k => `<option value="${esc(k)}" ${state.sb === k ? 'selected' : ''}>${esc(k)} (${c[k]})</option>`).join('')}`; };
+  const refresh = () => { compute(); pintarSB(); draw(); };
+  const sb = $('#lsb', el); if (sb) sb.onchange = () => { state.sb = sb.value; state.page = 0; sel.clear(); compute(); if (state.sb) rowsF.forEach(r => sel.add(r._id)); pintarSB(); draw(); };
   $('#lq', el).addEventListener('input', debounce(e => { state.q = e.target.value; state.page = 0; refresh(); }, 160));
   $$('[data-fk]', el).forEach(s => s.onchange = () => { state.f[s.dataset.fk] = s.value; state.page = 0; save(); refresh(); });
   const qk = $('#lqk', el); if (qk) qk.onchange = () => { state.qk = qk.value; state.page = 0; save(); refresh(); };
