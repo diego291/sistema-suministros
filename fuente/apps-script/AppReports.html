@@ -788,10 +788,48 @@ function enlazarFixArr(redraw) {
     toast(`Recibo ${recNum(r)}: nombre corregido a ${a.nombre}`, 'ok'); redraw && setTimeout(redraw, 0);
   });
 }
+/* Revisa todos los pagos enlazados a recibos y corrige los que quedaron mal:
+   - recibo anulado/eliminado/sin alquiler: se quitan los automáticos y se desenlazan los demás;
+   - pago asignado a otro arrendatario (el monto y el nombre del recibo dicen de quién es): se pasa al correcto,
+     o se quita si el correcto ya tiene ese recibo registrado;
+   - un recibo de N cuotas partido en montos raros: queda en N pagos de la cuota, en los meses más antiguos que tenía. */
+async function repararPagosArr() {
+  const out = [], save = [], hoy = fdate(today()), marca = p => [String(p.obs || '').trim(), `Corregido por el sistema ${hoy}`].filter(Boolean).join(' · ');
+  const g = {}; Store.all('cafetines').filter(p => p.rec_id).forEach(p => (g[p.rec_id] = g[p.rec_id] || []).push(p));
+  for (const rid in g) {
+    let ps = g[rid].map(p => Object.assign({}, p)); const r = Store.get('recibos', rid);
+    const quitar = (p, por) => { save.push(Object.assign({}, p, pagoAuto(p) ? { _del: 1 } : { rec_id: '' })); out.push(`${p.recibo} (${p.mes} ${money(p.cantidad)}) ${pagoAuto(p) ? 'quitado' : 'desenlazado'}: ${por}`); };
+    if (!r || r._del || isTrue(r.nulo) || !montoArrDe(r)) { ps.forEach(p => quitar(p, 'el recibo ya no cobra alquiler')); continue; }
+    const monto = montoArrDe(r), dueno = arrDeRecibo(r) || parecidoArr(r);
+    if (!dueno) { ps.forEach(p => quitar(p, motivoArr(r))); continue; }
+    const base = { nombre: dueno.nombre, arr_id: dueno._id, categoria: dueno.categoria || 'Cafetín', concepto: 'Alquiler de ' + String(dueno.categoria || 'local').toLowerCase() + (dueno.espacio ? ' (' + dueno.espacio + ')' : '') };
+    const n0 = soloDig(r.numero), ya = Store.all('cafetines').some(x => x.arr_id === dueno._id && x.rec_id !== rid && numsDe(x.recibo).includes(n0));
+    const quedan = [];
+    ps.forEach(p => { if (p.arr_id === dueno._id) { quedan.push(p); return; }
+      const de = (Store.get('arrendatarios', p.arr_id) || {}).nombre || p.nombre;
+      if (ya) { save.push(Object.assign({}, p, { _del: 1 })); out.push(`${p.recibo} quitado de ${de}: ya estaba registrado en ${dueno.nombre}`); }
+      else { const q = Object.assign({}, p, base, { obs: marca(p) }); quedan.push(q); save.push(q); out.push(`${p.recibo} (${p.mes} ${money(p.cantidad)}) pasado de ${de} a ${dueno.nombre}`); } });
+    if (!quedan.length || !cuotaCuadra(dueno, monto)) continue;
+    const k = Math.round(monto / num(dueno.cuota)), cuota = num(dueno.cuota);
+    if (quedan.length === k && quedan.every(p => Math.abs(num(p.cantidad) - cuota) < 0.005)) continue;
+    const ord = quedan.slice().sort((x, y) => MESES.indexOf(norm(x.mes)) - MESES.indexOf(norm(y.mes)));
+    ord.forEach((p, i) => { const ix = save.findIndex(z => z._id === p._id); if (ix >= 0) save.splice(ix, 1);
+      if (i < k) { save.push(Object.assign({}, p, { cantidad: cuota, obs: marca(p) })); if (Math.abs(num(p.cantidad) - cuota) > 0.004) out.push(`${p.recibo} ${p.mes}: ${money(p.cantidad)} → ${money(cuota)} (cuota de ${dueno.nombre})`); }
+      else { save.push(Object.assign({}, p, { _del: 1 })); out.push(`${p.recibo} ${p.mes} ${money(p.cantidad)} quitado: el recibo es de ${k} cuota(s) y ya quedó en ${ord.slice(0, k).map(x => x.mes).join(', ')}`); } });
+  }
+  if (save.length) await Store.saveMany('cafetines', save);
+  return out;
+}
+const verReparacionArr = xs => modal('Corrección de pagos de arrendamiento', `<p style="margin:0 0 8px">${xs.length ? 'Se corrigió lo siguiente:' : '✔ No se encontraron pagos mal asignados.'}</p>${xs.length ? `<ul style="margin:0;padding-left:18px;max-height:55vh;overflow:auto">${xs.map(x => `<li style="margin:3px 0">${esc(x)}</li>`).join('')}</ul>` : ''}`, [{ l: 'Cerrar', pri: 1 }]);
 defView('t:arrcuenta', 'Estado de cuenta de arrendatarios', (el, p) => {
   let cat = LS.get('arrCat', '');
   /* Una sola vez: quita los pagos repetidos que creó el primer enlace masivo de recibos */
-  if (!(CFG.arreglos || {}).arrLink2 && pagosArrDelEnlace().length) setTimeout(async () => {
+  /* Una sola vez: corrige los pagos enlazados que quedaron mal asignados o partidos */
+  if (!(CFG.arreglos || {}).arrRep3) setTimeout(async () => {
+    if (pagosArrDelEnlace().length) await deshacerEnlaceArr();
+    const xs = await repararPagosArr(); CFG.arreglos = Object.assign({}, CFG.arreglos, { arrLink1: 1, arrLink2: 1, arrRep3: 1 }); try { await saveCfg(); } catch (e) {}
+    if (xs.length) verReparacionArr(xs); draw(); }, 0);
+  else if (!(CFG.arreglos || {}).arrLink2 && pagosArrDelEnlace().length) setTimeout(async () => {
     const n = await deshacerEnlaceArr(); CFG.arreglos = Object.assign({}, CFG.arreglos, { arrLink1: 1, arrLink2: 1 }); try { await saveCfg(); } catch (e) {}
     toast(`Se quitaron ${n} pago(s) repetidos que había creado el enlace de recibos. Los pagos que usted registró se conservan.`, 'ok', 9000); draw(); }, 0);
   const draw = () => {
@@ -802,7 +840,7 @@ defView('t:arrcuenta', 'Estado de cuenta de arrendatarios', (el, p) => {
     const celda = (x, m) => { const v = x.meses[m - 1], c = num(x.a.cuota); const due = m >= x.desde && m <= x.hasta; if (v + 0.004 >= c && v) return `<td class="c ok-t" title="${money(v)}">✔</td>`; if (v) return `<td class="c warn-t" title="Abono ${money(v)}">◐</td>`; return due ? `<td class="c bad-t" title="Pendiente">✘</td>` : (m >= x.desde && m <= x.hastaC ? '<td class="c muted" title="Por vencer (contrato)">○</td>' : '<td class="c muted">·</td>'); };
     const T = k => filas.reduce((s, x) => s + num(x[k]), 0);
     el.innerHTML = `<div class="bar"><div class="chips"><span class="chip ${!cat ? 'on' : ''}" data-c="">Todas las categorías</span>${cats.map(c => `<span class="chip ${c === cat ? 'on' : ''}" data-c="${esc(c)}">${esc(c)}</span>`).join('')}</div>
-      ${p.id ? '<button class="btn" id="aAll">← Ver todos</button>' : ''}<span class="sp"></span>${((n, d) => n || d ? `<button class="btn warn" id="aLink" title="Revisa los recibos: los que cobran alquiler y aún no aparecen aquí, y los que parecen de cafetín pero no tienen el rubro de alquiler">🔗 Revisar recibos (${n ? n + ' sin enlazar' : ''}${n && d ? ' · ' : ''}${d ? d + ' a revisar' : ''})</button>` : '')(recibosArrSinEnlace().length, recibosArrDudosos().length)}<button class="btn" id="aNew">+ Arrendatario</button><button class="btn" id="aPay">+ Registrar pago</button><button class="btn pri" id="aPr">🖨️ Imprimir</button></div>
+      ${p.id ? '<button class="btn" id="aAll">← Ver todos</button>' : ''}<span class="sp"></span>${((n, d) => n || d ? `<button class="btn warn" id="aLink" title="Revisa los recibos: los que cobran alquiler y aún no aparecen aquí, y los que parecen de cafetín pero no tienen el rubro de alquiler">🔗 Revisar recibos (${n ? n + ' sin enlazar' : ''}${n && d ? ' · ' : ''}${d ? d + ' a revisar' : ''})</button>` : '')(recibosArrSinEnlace().length, recibosArrDudosos().length)}<button class="btn" id="aRep" title="Revisa los pagos enlazados a recibos y corrige los mal asignados">🩺 Corregir pagos</button><button class="btn" id="aNew">+ Arrendatario</button><button class="btn" id="aPay">+ Registrar pago</button><button class="btn pri" id="aPr">🖨️ Imprimir</button></div>
       <div class="kpis"><div class="kpi"><div class="l">Arrendatarios</div><div class="v">${filas.length}</div></div><div class="kpi"><div class="l">Esperado a la fecha</div><div class="v">${money(T('esp'))}</div></div><div class="kpi ok"><div class="l">Pagado</div><div class="v">${money(T('pag'))}</div></div><div class="kpi ${T('saldo') > 0.004 ? 'bad' : 'ok'}"><div class="l">Saldo vencido (a la fecha)</div><div class="v">${money(T('saldo'))}</div></div><div class="kpi ${T('porVencer') > 0.004 ? 'warn' : 'ok'}"><div class="l">Por vencer (resto del contrato)</div><div class="v">${money(T('porVencer'))}</div></div></div>
       ${filas.length ? `<div class="arr-grid">${filas.map(x => { const a = x.a; return `<div class="card arr-card" data-a="${a._id}">
         <div class="arr-h"><div style="flex:1;min-width:0"><b class="arr-n">${esc(a.nombre)}</b>${a.notas ? ' <span title="Tiene notas">📝</span>' : ''}<div class="muted" style="font-size:12px">${esc([a.espacio, a.categoria, 'cuota ' + money(a.cuota)].filter(Boolean).join(' · '))}${a.estado === 'INACTIVO' ? ' · <span class="bad-t">INACTIVO</span>' : ''}</div></div>
@@ -822,6 +860,7 @@ defView('t:arrcuenta', 'Estado de cuenta de arrendatarios', (el, p) => {
     $('#aPay', el).onclick = () => openPagoArr({}, draw);
     $$('[data-edpg]', el).forEach(b => b.onclick = () => { const pg = Store.get('cafetines', b.dataset.edpg); if (pg) openForm('cafetines', pg, { onDone: draw }); });
     $$('[data-verrec]', el).forEach(b => b.onclick = () => { const rc = Store.get('recibos', b.dataset.verrec); if (rc) openRecibo(rc, draw); });
+    $('#aRep', el).onclick = async () => { const xs = await repararPagosArr(); verReparacionArr(xs); draw(); };
     const lk = $('#aLink', el); if (lk) lk.onclick = async () => {
       const xs = recibosArrSinEnlace(), dd = recibosArrDudosos();
       const filas = xs.map(r => { const a = arrDeRecibo(r); const dup = a && !Store.all('cafetines').some(p => !p.rec_id && (p.arr_id === a._id) && (numsDe(p.recibo).includes(soloDig(r.numero)) || toYMD(p.fecha) === toYMD(r.fecha))) && libreArr(a) + 0.004 < montoArrDe(r); return `<tr><td>${esc(recNum(r))}</td><td>${fdate(r.fecha)}</td><td>${esc(r.nombre)}</td><td>${a ? esc(a.nombre) + (dup ? '<br><span class="warn-t" style="font-size:11px">Posible duplicado: no se agregará</span>' : '') : selArrFix(r)}</td><td class="num">${money(montoArrDe(r))}</td></tr>`; }).join('');
