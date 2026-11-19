@@ -881,6 +881,13 @@ function recibosArrSinEnlace() {
   return Store.all('recibos').filter(r => !isTrue(r.nulo) && montoArrDe(r) > 0 && !enl.has(r._id)).sort((a, b) => String(a.fecha).localeCompare(b.fecha) || num(a.numero) - num(b.numero));
 }
 
+/** Recibos que parecen de un arrendatario (pagador o concepto) pero no traen monto en el rubro de alquiler: no pueden reflejarse solos. */
+function recibosArrDudosos() {
+  const nombres = new Set(); Store.all('arrendatarios').forEach(a => { nombres.add(norm(a.nombre)); String(a.encargados || '').split(/\n|,|;/).forEach(x => x.trim() && nombres.add(norm(x.trim()))); });
+  return Store.all('recibos').filter(r => !isTrue(r.nulo) && !montoArrDe(r) && num(r.pago) > 0 && (nombres.has(norm(r.nombre)) || /cafet|alquiler|arrend|chalet/i.test(String(r.concepto || '') + ' ' + String(r.obs || ''))))
+    .sort((a, b) => String(a.fecha).localeCompare(b.fecha) || num(a.numero) - num(b.numero));
+}
+
 defMod({ key: 'unif_pedidos', label: 'Pedidos a proveedor', fields: [
   { k: 'pedido', l: 'Pedido N°', t: 'number', req: 1, plain: 1, def: () => Math.max(1, ...Store.all('unif_pedidos').map(r => num(r.pedido))) },
   { k: 'fecha', l: 'Fecha', t: 'date', def: today }, { k: 'nivel', l: 'Nivel', t: 'select', o: 'unif_niveles' },
