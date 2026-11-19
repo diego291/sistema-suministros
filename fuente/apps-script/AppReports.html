@@ -768,8 +768,9 @@ function paginaSolvencia(x, o, t) {
 /* Recibo con el nombre mal digitado: se elige el arrendatario correcto y se corrige el recibo. */
 function parecidoArr(r) {
   const tk = x => new Set(norm(x).split(/\s+/).filter(t => t.length > 2)); const t0 = tk(r.nombre);
-  let best = null, sc = 0; Store.all('arrendatarios').forEach(a => { [a.nombre, ...String(a.encargados || '').split(/\n|,|;/)].forEach(nm => { const t = tk(nm); let c = 0; t0.forEach(x => { if (t.has(x)) c++; }); if (c > sc) { sc = c; best = a; } }); });
-  return best;
+  /* puntaje: palabras del nombre en común + 1.5 si el monto es múltiplo exacto de su cuota. Si hay empate, no se propone nadie. */
+  const m0 = montoArrDe(r), pts = Store.all('arrendatarios').map(a => { let c = 0; [a.nombre, ...String(a.encargados || '').split(/\n|,|;/)].forEach(nm => { const t = tk(nm); let k = 0; t0.forEach(x => { if (t.has(x)) k++; }); c = Math.max(c, k); }); const q = num(a.cuota); if (c && q && m0 && Math.abs(m0 / q - Math.round(m0 / q)) < 0.001) c += 1.5; return { a, c }; }).sort((x, y) => y.c - x.c);
+  return pts[0] && pts[0].c > 0 && !(pts[1] && pts[1].c === pts[0].c) ? pts[0].a : null;
 }
 function selArrFix(r) {
   const b = parecidoArr(r);
@@ -812,11 +813,14 @@ defView('t:arrcuenta', 'Estado de cuenta de arrendatarios', (el, p) => {
         <div class="arr-b"><button class="btn sm" data-pay>+ Pago</button><button class="btn sm" data-carta ${x.saldo > 0.004 ? '' : 'disabled'}>✉️ Carta</button><button class="btn sm" data-solv title="Constancia de solvencia y finalización del contrato">📄 Solvencia</button>${p.id ? '<button class="btn sm" data-edit>✏️ Editar contrato</button>' : '<button class="btn sm" data-ver>Ver detalle</button>'}</div></div>`; }).join('')}</div>
       <p class="muted" style="font-size:12px">✓ pagado · ◐ abono parcial · ✗ pendiente (ya venció) · gris punteado = por vencer · el saldo cuenta hasta el mes actual; “Por vencer” es lo que falta hasta el fin del contrato.</p>`
       : `<div class="empty">No hay arrendatarios. Agregue cafetines, chalets o locales con <b>+ Arrendatario</b>.</div>`}
-      ${p.id && filas[0] ? `<div class="card"><h3>Pagos registrados de ${esc(filas[0].a.nombre)}</h3><table class="t"><thead><tr><th>Mes</th><th>Fecha</th><th>Recibo</th><th>Comprobante</th><th class="r">Cantidad</th><th>Obs.</th></tr></thead><tbody>${filas[0].lista.map(pg => `<tr><td>${esc(pg.mes || '')}</td><td>${fdate(pg.fecha)}</td><td>${esc(pg.recibo || '')}</td><td>${esc(pg.comprobante || '')}</td><td class="num">${money(pg.cantidad)}</td><td>${esc(pg.obs || '')}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">Sin pagos</td></tr>'}</tbody></table></div>` : ''}`;
+      ${p.id && filas[0] ? `<div class="card"><h3>Pagos registrados de ${esc(filas[0].a.nombre)}</h3><table class="t"><thead><tr><th>Mes</th><th>Fecha</th><th>Recibo</th><th>Comprobante</th><th class="r">Cantidad</th><th>Origen</th><th>Obs.</th><th></th></tr></thead><tbody>${filas[0].lista.map(pg => { const ab = Math.abs(num(pg.cantidad) - num(filas[0].a.cuota)) > 0.004; const rc = pg.rec_id && Store.get('recibos', pg.rec_id);
+        return `<tr><td>${esc(pg.mes || '')}</td><td>${fdate(pg.fecha)}</td><td>${esc(pg.recibo || '')}</td><td>${esc(pg.comprobante || '')}</td><td class="num ${ab ? 'warn-t' : ''}" title="${ab ? 'No coincide con la cuota' : ''}">${money(pg.cantidad)}</td><td style="font-size:12px">${pg.rec_id ? `🧾 Recibo${rc ? ': ' + esc(rc.nombre) : ''}` : '✍️ A mano'}</td><td>${esc(pg.obs || '')}</td><td style="white-space:nowrap"><button class="btn sm" data-edpg="${pg._id}" title="Cambiar mes, monto o arrendatario de este pago">✏️</button>${rc ? ` <button class="btn sm" data-verrec="${rc._id}" title="Abrir el recibo">🧾</button>` : ''}</td></tr>`; }).join('') || '<tr><td colspan="8" class="muted">Sin pagos</td></tr>'}</tbody></table></div>` : ''}`;
     $$('[data-c]', el).forEach(c => c.onclick = () => { cat = c.dataset.c; LS.set('arrCat', cat); draw(); });
     const all = $('#aAll', el); if (all) all.onclick = () => go('t:arrcuenta');
     $('#aNew', el).onclick = () => openForm('arrendatarios', null, { onDone: draw });
     $('#aPay', el).onclick = () => openPagoArr({}, draw);
+    $$('[data-edpg]', el).forEach(b => b.onclick = () => { const pg = Store.get('cafetines', b.dataset.edpg); if (pg) openForm('cafetines', pg, { onDone: draw }); });
+    $$('[data-verrec]', el).forEach(b => b.onclick = () => { const rc = Store.get('recibos', b.dataset.verrec); if (rc) openRecibo(rc, draw); });
     const lk = $('#aLink', el); if (lk) lk.onclick = async () => {
       const xs = recibosArrSinEnlace(), dd = recibosArrDudosos();
       const filas = xs.map(r => { const a = arrDeRecibo(r); const dup = a && !Store.all('cafetines').some(p => !p.rec_id && (p.arr_id === a._id) && (numsDe(p.recibo).includes(soloDig(r.numero)) || toYMD(p.fecha) === toYMD(r.fecha))) && libreArr(a) + 0.004 < montoArrDe(r); return `<tr><td>${esc(recNum(r))}</td><td>${fdate(r.fecha)}</td><td>${esc(r.nombre)}</td><td>${a ? esc(a.nombre) + (dup ? '<br><span class="warn-t" style="font-size:11px">Posible duplicado: no se agregará</span>' : '') : selArrFix(r)}</td><td class="num">${money(montoArrDe(r))}</td></tr>`; }).join('');

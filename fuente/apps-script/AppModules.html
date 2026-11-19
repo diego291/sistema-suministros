@@ -851,7 +851,12 @@ function libreArr(a) { const ec = estadoCuentaArr()[a._id]; if (!ec) return 0; l
 const ARR_LINK_DESDE = Date.parse('2026-11-19T16:38:00Z');
 function pagosArrDelEnlace() { return Store.all('cafetines').filter(p => p.rec_id && parseInt(String(p._id).slice(0, 8), 36) >= ARR_LINK_DESDE && parseInt(String(p._id).slice(0, 8), 36) < ARR_LINK_DESDE + 3 * 3600e3 && !isTrue(p.fijo)); }
 async function deshacerEnlaceArr() { const xs = pagosArrDelEnlace(); if (xs.length) await Store.saveMany('cafetines', xs.map(p => Object.assign({}, p, { _del: 1 }))); return xs.length; }
-function repartirArr(a, monto, sin) {
+/** Meses que el recibo nombra en su concepto u observaciones ("ALQUILER MAYO Y JUNIO" → [5, 6]). */
+function mesesDeTexto(t) { const n = norm(t); return MESES.map((m, i) => new RegExp('\\b' + m + '\\b').test(n) ? i + 1 : 0).filter(Boolean); }
+function repartirArr(a, monto, sin, nombrados) {
+  if (nombrados && nombrados.length) { const cuota = num(a.cuota), out = []; let resto = r2(monto);
+    nombrados.forEach((m, i) => { if (resto <= 0.004) return; const v = i === nombrados.length - 1 ? resto : r2(Math.min(cuota || resto, resto)); out.push([m, v]); resto = r2(resto - v); });
+    return out; }
   const ec = estadoCuentaArr()[a._id]; const pag = ec ? ec.meses.slice() : Array(12).fill(0);
   (sin || []).forEach(p => { const m = MESES.indexOf(norm(p.mes)); if (m >= 0) pag[m] -= num(p.cantidad); });
   const cuota = num(a.cuota), desde = ec ? Math.min(ec.desde, 12) : 1, hasta = ec ? Math.max(ec.hastaC, desde) : 12;
@@ -883,9 +888,14 @@ async function syncArrRecibo(r) {
     await Store.saveMany('cafetines', ch);
     return manual.length ? `enlazado con ${manual.length} pago(s) de arrendamiento que ya existían` : '';
   }
+  if (manual.length) { /* pagos a mano con monto distinto: se enlazan tal cual (nunca se les cambia mes ni monto) */
+    await Store.saveMany('cafetines', manual.map(p => Object.assign({}, p, { rec_id: r._id, arr_id: a._id })));
+    const dif = r2(monto - manual.reduce((s2, p) => s2 + num(p.cantidad), 0));
+    return `⚠ Enlazado con ${manual.length} pago(s) a mano, pero el recibo ${recNum(r)} dice ${money(monto)} y los pagos suman ${money(r2(monto - dif))}. Revise el detalle de ${a.nombre}.`;
+  }
   /* Si el arrendatario ya tiene pagados los meses del contrato, este recibo casi seguro ya está registrado a mano: no se duplica. */
   if (!actuales.length && libreArr(a) + 0.004 < monto) return `⚠ Posible duplicado: ${a.nombre} ya tiene pagados los meses del contrato; el recibo ${recNum(r)} no se agregó. Revise si ese pago ya está registrado a mano.`;
-  const ms = repartirArr(a, monto, actuales), grupo = ms.length > 1 ? r._id : '';
+  const ms = repartirArr(a, monto, actuales, mesesDeTexto(String(r.concepto || '') + ' ' + String(r.obs || ''))), grupo = ms.length > 1 ? r._id : '';
   const nuevos = ms.map(([m, v], i) => Object.assign({}, actuales[i] || {}, base, { _id: actuales[i] ? actuales[i]._id : undefined, mes: cap(MESES[m - 1]), cantidad: v, grupo, obs: (actuales[i] && actuales[i].obs) || '' }));
   nuevos.forEach(x => { if (!x._id) delete x._id; });
   const quitar = actuales.slice(ms.length).map(p => Object.assign({}, p, { _del: 1 }));
