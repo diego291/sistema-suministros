@@ -448,7 +448,7 @@ defView('cfg:import', 'Importar y exportar', el => {
     reemplazar=true: borra antes los datos de este equipo (se usa en el demo). */
 async function restaurarRespaldo(d, reemplazar) {
   if (reemplazar) { const keep = { seedVer: await IDB.get('seedVer'), year: await IDB.get('year') }; await IDB.clearAll(); Store.queued = new Set(); for (const k in keep) if (keep[k] !== undefined) await IDB.set(k, keep[k]); }
-  if (d.ahora) { const t = Date.now(); d.rows.forEach((o, i) => { o.d._upd = t + i * 0.001; }); } /* archivo de corrección: su versión manda sobre la actual */
+  if (d.ahora) { const t = Date.now(); d.rows.forEach((o, i) => { const m = o.b.split('|')[1], ant = Store.data[m] && Store.data[m].get(o.d._id); o.d._upd = Math.max(t + i * 0.001, ant ? num(ant._upd) + 0.01 : 0); }); } /* archivo de corrección: su versión manda sobre la actual */
   const q = d.rows.map(o => ({ k: o.k, b: o.b, mod: o.b.split('|')[1], d: o.d }));
   for (let i = 0; i < d.rows.length; i += 2000) { await IDB.put('rows', d.rows.slice(i, i + 2000)); await IDB.put('queue', q.slice(i, i + 2000)); }
   const ys = LS.get('localYears', []); d.rows.forEach(o => { const y = Number(o.b.split('|')[0]); if (y && !ys.includes(y)) ys.push(y); }); LS.set('localYears', ys);
@@ -456,11 +456,13 @@ async function restaurarRespaldo(d, reemplazar) {
   await Store.loadAll(); renderYears(); Sync.run();
 }
 /** Registros idénticos en todos sus campos de datos (por módulo). Devuelve {mod: [copias a eliminar]} */
-const CAMPOS_TECNICOS = new Set(['_id', '_upd', '_srv', '_del', 'orden', 'est_id', 'art_id', 'arr_id', 'rec_id', 'per_id', 'grupo', 'mes', 'total']);
+const CAMPOS_TECNICOS = new Set(['_id', '_upd', '_srv', '_del', 'orden', 'est_id', 'art_id', 'arr_id', 'rec_id', 'per_id', 'grupo', 'total', 'auto']);
+/* 'mes' solo es técnico en recibos (sale de la fecha). En pagos de arrendamiento es el mes que se cancela: dos pagos que solo cambian de mes NO son copias. */
+const tecnico = (m, k) => CAMPOS_TECNICOS.has(k) || (k === 'mes' && m === 'recibos');
 function duplicadosExactos() {
   const out = {};
   for (const m of Object.keys(MOD)) {
-    const fs = fieldsOf(m).filter(f => f.t !== 'calc' && !CAMPOS_TECNICOS.has(f.k)).map(f => f.k);
+    const fs = fieldsOf(m).filter(f => f.t !== 'calc' && !tecnico(m, f.k)).map(f => f.k);
     const vistos = new Map(); out[m] = [];
     Store.all(m).slice().sort((a, b) => num(b._upd) - num(a._upd)).forEach(r => {
       const firma = JSON.stringify(fs.map(k => { const v = r[k]; return v === undefined || v === null ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v); }));

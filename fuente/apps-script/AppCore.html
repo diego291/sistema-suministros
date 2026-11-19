@@ -299,7 +299,7 @@ const Store = {
     rows.forEach((row, i) => {
       const r = Object.assign({}, row);
       if (!r._id) r._id = uid();
-      r._upd = now + i * 0.001; r._del = r._del ? 1 : 0;
+      const ant = map.get(r._id); r._upd = Math.max(now + i * 0.001, ant ? num(ant._upd) + 0.01 : 0); r._del = r._del ? 1 : 0; /* una edición siempre es más nueva que la versión anterior */
       delete r._dirty;
       map.set(r._id, r); out.push(r);
       const k = b + '|' + r._id; this.queued.add(k);
