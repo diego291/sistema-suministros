@@ -598,7 +598,7 @@ function vistaArqueo(el, p) {
   const esp = () => manual !== null ? manual : esperadoAuto();
   const resultado = () => { const d = r2(contado() - esp()); return { d, txt: Math.abs(d) < 0.01 ? '✔ CUADRA' : d < 0 ? 'FALTANTE de ' + money(-d) : 'SOBRANTE de ' + money(d) }; };
   const fila = (l, v, cls) => { const e = exprs[l] ?? (cnt[l] ? String(cnt[l]) : ''); return `<tr data-row="${esc(l)}"><td style="width:84px"><span class="aq-d ${cls}">${esc(l.replace(/^(Billete|Moneda) /, ''))}</span></td><td><input class="in aq-in" inputmode="decimal" autocomplete="off" data-d="${esc(l)}" value="${esc(e)}"></td><td class="aq-eq">${esOp(e) && !isNaN(evalCant(e)) ? '= ' + nfmt(evalCant(e)) : ''}</td><td class="num aq-sub">${num(cnt[l]) ? money(num(cnt[l]) * v) : '<span class="muted">—</span>'}</td></tr>`; };
-  const BIL = DENOM.filter(([l]) => /^Billete/.test(l)), MON = DENOM.filter(([l]) => !/^Billete/.test(l));
+  const BIL = DENOM.filter(([l]) => /^Billete/.test(l)).reverse(), MON = DENOM.filter(([l]) => !/^Billete/.test(l)); /* billetes: del más pequeño al más grande, como se cuentan */
   const subt = arr => r2(arr.reduce((a, [l, v]) => a + num(cnt[l]) * v, 0));
   const pintaRes = () => {
     const r = resultado(), ok = Math.abs(r.d) < 0.01;
