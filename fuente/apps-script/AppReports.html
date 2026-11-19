@@ -769,17 +769,18 @@ function paginaSolvencia(x, o, t) {
 function parecidoArr(r) {
   const tk = x => new Set(norm(x).split(/\s+/).filter(t => t.length > 2)); const t0 = tk(r.nombre);
   /* puntaje: palabras del nombre en común + 1.5 si el monto es múltiplo exacto de su cuota. Si hay empate, no se propone nadie. */
-  const m0 = montoArrDe(r), pts = Store.all('arrendatarios').map(a => { let c = 0; [a.nombre, ...String(a.encargados || '').split(/\n|,|;/)].forEach(nm => { const t = tk(nm); let k = 0; t0.forEach(x => { if (t.has(x)) k++; }); c = Math.max(c, k); }); const q = num(a.cuota); if (c && q && m0 && Math.abs(m0 / q - Math.round(m0 / q)) < 0.001) c += 1.5; return { a, c }; }).sort((x, y) => y.c - x.c);
+  const m0 = montoArrDe(r), pts = Store.all('arrendatarios').filter(a => cuotaCuadra(a, m0)).map(a => { let c = 0; [a.nombre, ...String(a.encargados || '').split(/\n|,|;/)].forEach(nm => { const t = tk(nm); let k = 0; t0.forEach(x => { if (t.has(x)) k++; }); c = Math.max(c, k); }); const q = num(a.cuota); if (c && q && m0 && Math.abs(m0 / q - Math.round(m0 / q)) < 0.001) c += 1.5; return { a, c }; }).sort((x, y) => y.c - x.c);
   return pts[0] && pts[0].c > 0 && !(pts[1] && pts[1].c === pts[0].c) ? pts[0].a : null;
 }
 function selArrFix(r) {
   const b = parecidoArr(r);
-  return `<span class="bad-t" style="font-size:11px">Nombre no reconocido</span><div style="display:flex;gap:4px;margin-top:3px"><select class="in" data-fixsel="${r._id}" style="padding:3px 6px;font-size:12px"><option value="">Elegir…</option>${Store.all('arrendatarios').map(a => `<option value="${a._id}" ${b && b._id === a._id ? 'selected' : ''}>${esc(a.nombre)}</option>`).join('')}</select><button type="button" class="btn sm" data-fix="${r._id}">Corregir</button></div>`;
+  return `<span class="bad-t" style="font-size:11px">${esc(motivoArr(r))}</span><div style="display:flex;gap:4px;margin-top:3px"><select class="in" data-fixsel="${r._id}" style="padding:3px 6px;font-size:12px"><option value="">Elegir…</option>${Store.all('arrendatarios').filter(a => cuotaCuadra(a, montoArrDe(r))).map(a => `<option value="${a._id}" ${b && b._id === a._id ? 'selected' : ''}>${esc(a.nombre)} (cuota ${money(a.cuota)})</option>`).join('')}</select><button type="button" class="btn sm" data-fix="${r._id}">Corregir</button></div>`;
 }
 function enlazarFixArr(redraw) {
   $$('#modal [data-fix]').forEach(bt => bt.onclick = async () => {
     const r = Store.get('recibos', bt.dataset.fix), a = Store.get('arrendatarios', ($(`#modal [data-fixsel="${bt.dataset.fix}"]`) || {}).value);
     if (!r || !a) { toast('Elija el arrendatario', 'bad'); return; }
+    if (!cuotaCuadra(a, montoArrDe(r))) { toast(`El monto ${money(montoArrDe(r))} no cuadra con la cuota de ${a.nombre} (${money(a.cuota)})`, 'bad', 6000); return; }
     const obs = [String(r.obs || '').trim(), `Nombre digitado antes: ${r.nombre}`].filter(Boolean).join(' · ');
     const saved = await Store.save('recibos', Object.assign({}, r, { nombre: a.nombre, obs }));
     const m = await syncArrRecibo(saved);
@@ -790,8 +791,8 @@ function enlazarFixArr(redraw) {
 defView('t:arrcuenta', 'Estado de cuenta de arrendatarios', (el, p) => {
   let cat = LS.get('arrCat', '');
   /* Una sola vez: quita los pagos repetidos que creó el primer enlace masivo de recibos */
-  if (!(CFG.arreglos || {}).arrLink1 && pagosArrDelEnlace().length) setTimeout(async () => {
-    const n = await deshacerEnlaceArr(); CFG.arreglos = Object.assign({}, CFG.arreglos, { arrLink1: 1 }); try { await saveCfg(); } catch (e) {}
+  if (!(CFG.arreglos || {}).arrLink2 && pagosArrDelEnlace().length) setTimeout(async () => {
+    const n = await deshacerEnlaceArr(); CFG.arreglos = Object.assign({}, CFG.arreglos, { arrLink1: 1, arrLink2: 1 }); try { await saveCfg(); } catch (e) {}
     toast(`Se quitaron ${n} pago(s) repetidos que había creado el enlace de recibos. Los pagos que usted registró se conservan.`, 'ok', 9000); draw(); }, 0);
   const draw = () => {
     const ec = estadoCuentaArr();

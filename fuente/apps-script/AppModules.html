@@ -591,7 +591,7 @@ defMod({ key: 'cafetines', label: 'Pagos de arrendamiento', fields: [
   { k: 'categoria', l: 'Categoría', t: 'select', o: 'arr_categorias', def: 'Cafetín' }, { k: 'concepto', l: 'Concepto', t: 'text', def: 'Alquiler de cafetín' },
   { k: 'mes', l: 'Mes que cancela', t: 'select', o: 'meses' }, { k: 'recibo', l: 'N° de recibo', t: 'text' },
   { k: 'fecha_banco', l: 'Fecha en banco', t: 'date' }, { k: 'fecha', l: 'Fecha de recibido', t: 'date', def: today },
-  { k: 'cantidad', l: 'Cantidad', t: 'money', req: 1 }, { k: 'comprobante', l: 'N° de comprobante', t: 'text' }, { k: 'obs', l: 'Observaciones', t: 'textarea', rows: 2 }, { k: 'arr_id', l: 'id arrendatario', t: 'text', hide: 1 }, { k: 'grupo', l: 'Grupo (recibo de varios meses)', t: 'text', hide: 1 }, { k: 'rec_id', l: 'id recibo', t: 'text', hide: 1 }],
+  { k: 'cantidad', l: 'Cantidad', t: 'money', req: 1 }, { k: 'comprobante', l: 'N° de comprobante', t: 'text' }, { k: 'obs', l: 'Observaciones', t: 'textarea', rows: 2 }, { k: 'arr_id', l: 'id arrendatario', t: 'text', hide: 1 }, { k: 'grupo', l: 'Grupo (recibo de varios meses)', t: 'text', hide: 1 }, { k: 'rec_id', l: 'id recibo', t: 'text', hide: 1 }, { k: 'auto', l: 'Creado desde recibo', t: 'check', hide: 1 }],
   table: ['nombre', 'categoria', 'concepto', 'mes', 'recibo', 'fecha_banco', 'fecha', 'cantidad', 'comprobante'], filters: ['categoria', 'nombre', 'mes'], dateField: 'fecha', sums: ['cantidad'], sort: { k: 'fecha', dir: -1 },
   beforeSave: r => { if (!r.arr_id) { const a = Store.all('arrendatarios').find(x => norm(x.nombre) === norm(r.nombre)); if (a) { r.arr_id = a._id; if (!r.categoria) r.categoria = a.categoria; } } },
   listButtons: [{ l: '📒 Estado de cuenta', fn: () => go('t:arrcuenta') }, { l: '👥 Arrendatarios', fn: () => go('m:arrendatarios') }],
@@ -838,10 +838,24 @@ const montoArrDe = r => r2(rubrosArr().reduce((a, rb) => a + num(r['r_' + rb.k])
 const soloDig = x => String(x ?? '').replace(/\D/g, '').replace(/^0+/, '');
 /** Números que aparecen en un texto ('B-15032, 15033' → ['15032','15033']) */
 const numsDe = x => (String(x ?? '').match(/\d+/g) || []).map(t => t.replace(/^0+/, '')).filter(Boolean);
+/** El monto del recibo tiene que ser la cuota del arrendatario o varias cuotas exactas (cada uno tiene su monto definido). */
+const cuotaCuadra = (a, monto) => { const q = num(a.cuota); if (!q || !monto) return false; const k = monto / q; return k >= 0.999 && Math.abs(k - Math.round(k)) < 0.001; };
+/** Arrendatario del recibo: por nombre exacto o encargada, y SOLO si el monto cuadra con su cuota. Si hay duda, ninguno. */
 function arrDeRecibo(r) {
   const n = norm(r.nombre); if (!n) return null;
-  const xs = Store.all('arrendatarios');
-  return xs.find(a => norm(a.nombre) === n) || xs.find(a => String(a.encargados || '').split(/\n|,|;/).some(x => norm(x.trim()) === n)) || null;
+  const xs = Store.all('arrendatarios'), monto = montoArrDe(r);
+  const porNombre = xs.filter(a => norm(a.nombre) === n), porEnc = xs.filter(a => String(a.encargados || '').split(/\n|,|;/).some(x => norm(x.trim()) === n));
+  const ok = [...new Set(porNombre.concat(porEnc))].filter(a => cuotaCuadra(a, monto));
+  return ok.length === 1 ? ok[0] : null;
+}
+/** Por qué un recibo no se pudo asignar (para los avisos). */
+function motivoArr(r) {
+  const n = norm(r.nombre), xs = Store.all('arrendatarios'), monto = montoArrDe(r);
+  const c = xs.filter(a => norm(a.nombre) === n || String(a.encargados || '').split(/\n|,|;/).some(x => norm(x.trim()) === n));
+  if (!c.length) return `No encontré el arrendatario "${r.nombre}"`;
+  const ok = c.filter(a => cuotaCuadra(a, monto));
+  if (!ok.length) return `El monto ${money(monto)} no cuadra con la cuota de ${c.map(a => `${a.nombre} (${money(a.cuota)})`).join(' ni de ')}`;
+  return `"${r.nombre}" coincide con varios arrendatarios (${ok.map(a => a.nombre).join(', ')})`;
 }
 /** Reparte un monto en los meses del contrato que faltan, del más antiguo al más reciente. */
 /** Lo que falta por pagar de todo el contrato (meses vencidos y por vencer). */
@@ -849,7 +863,8 @@ function libreArr(a) { const ec = estadoCuentaArr()[a._id]; if (!ec) return 0; l
 /** Arreglo del 19/11/2026: el primer enlace masivo creó pagos repetidos de recibos que ya estaban registrados a mano.
     Esos pagos se reconocen porque tienen rec_id y su id se creó después de publicar el enlace (10:38). Se quitan una sola vez. */
 const ARR_LINK_DESDE = Date.parse('2026-11-19T16:38:00Z');
-function pagosArrDelEnlace() { return Store.all('cafetines').filter(p => p.rec_id && parseInt(String(p._id).slice(0, 8), 36) >= ARR_LINK_DESDE && parseInt(String(p._id).slice(0, 8), 36) < ARR_LINK_DESDE + 3 * 3600e3 && !isTrue(p.fijo)); }
+const ARR_LINK_HASTA = Date.parse('2026-11-19T18:30:00Z'); /* todo lo que creó el enlace antes de esta corrección */
+function pagosArrDelEnlace() { return Store.all('cafetines').filter(p => { const t = parseInt(String(p._id).slice(0, 8), 36); return p.rec_id && t >= ARR_LINK_DESDE && t < ARR_LINK_HASTA && !isTrue(p.fijo) && !isTrue(p.auto); }); } /* los nuevos (auto) ya se crean con las reglas correctas */
 async function deshacerEnlaceArr() { const xs = pagosArrDelEnlace(); if (xs.length) await Store.saveMany('cafetines', xs.map(p => Object.assign({}, p, { _del: 1 }))); return xs.length; }
 /** Meses que el recibo nombra en su concepto u observaciones ("ALQUILER MAYO Y JUNIO" → [5, 6]). */
 function mesesDeTexto(t) { const n = norm(t); return MESES.map((m, i) => new RegExp('\\b' + m + '\\b').test(n) ? i + 1 : 0).filter(Boolean); }
@@ -865,41 +880,41 @@ function repartirArr(a, monto, sin, nombrados) {
   if (resto > 0.004) { if (out.length) out[out.length - 1][1] = r2(out[out.length - 1][1] + resto); else out.push([Math.min(12, (dobj(today()) || new Date()).getMonth() + 1), resto]); }
   return out;
 }
+/* Pagos que creó el sistema desde un recibo (auto) frente a pagos que registró el usuario a mano.
+   A los pagos a mano NUNCA se les cambia mes ni monto, ni se borran: como mucho se enlazan o se desenlazan. */
+const pagoAuto = p => isTrue(p.auto) || parseInt(String(p._id).slice(0, 8), 36) >= ARR_LINK_DESDE;
 async function syncArrRecibo(r) {
   const prev = Store.all('cafetines').filter(p => p.rec_id === r._id);
+  const autos = prev.filter(pagoAuto), mios = prev.filter(p => !pagoAuto(p));
+  const soltar = (xs, ys) => Store.saveMany('cafetines', xs.map(p => Object.assign({}, p, { _del: 1 })).concat(ys.map(p => Object.assign({}, p, { rec_id: '' }))));
   const monto = (r._del || isTrue(r.nulo)) ? 0 : montoArrDe(r);
-  if (!monto) { if (prev.length) { await Store.saveMany('cafetines', prev.map(p => Object.assign({}, p, { _del: 1 }))); return 'se quitaron sus pagos de arrendamiento'; } return ''; }
+  if (!monto) { if (prev.length) { await soltar(autos, mios); return autos.length ? 'se quitaron sus pagos de arrendamiento' : ''; } return ''; }
   const a = arrDeRecibo(r);
-  if (!a) return `⚠ No encontré el arrendatario "${r.nombre}". Agréguelo (o como encargada) en Arrendatarios para enlazar el pago.`;
-  const num_ = recNum(r), base = { nombre: a.nombre, arr_id: a._id, categoria: a.categoria || 'Cafetín', concepto: 'Alquiler de ' + String(a.categoria || 'local').toLowerCase() + (a.espacio ? ' (' + a.espacio + ')' : ''), recibo: num_, fecha: r.fecha, rec_id: r._id };
-  /* Pagos registrados a mano antes: se enlazan en vez de duplicarlos.
-     1) los que mencionan este N° de recibo (o en el comprobante); 2) si no, los de la misma fecha que suman lo mismo. */
-  let manual = [];
-  if (!prev.length) {
-    const libres = Store.all('cafetines').filter(p => !p.rec_id && (p.arr_id === a._id || norm(p.nombre) === norm(a.nombre)));
-    const n0 = soloDig(r.numero);
+  if (!a) { if (prev.length) await soltar(autos, mios); return `⚠ ${motivoArr(r)}. El recibo ${recNum(r)} no se agregó al estado de cuenta.`; }
+  const deA = p => p.arr_id === a._id || (!p.arr_id && norm(p.nombre) === norm(a.nombre));
+  const otros = mios.filter(p => !deA(p)); let manual = mios.filter(deA);
+  if (otros.length) await soltar([], otros); /* el recibo cambió de arrendatario: los pagos a mano del otro se desenlazan, no se tocan */
+  const base = { nombre: a.nombre, arr_id: a._id, categoria: a.categoria || 'Cafetín', concepto: 'Alquiler de ' + String(a.categoria || 'local').toLowerCase() + (a.espacio ? ' (' + a.espacio + ')' : ''), recibo: recNum(r), fecha: r.fecha, rec_id: r._id };
+  /* Pagos registrados a mano: 1) los que mencionan este N° de recibo o comprobante; 2) si no, los de la misma fecha que suman lo mismo. */
+  if (!manual.length && !autos.length) {
+    const libres = Store.all('cafetines').filter(p => !p.rec_id && deA(p)), n0 = soloDig(r.numero);
     manual = libres.filter(p => n0 && (numsDe(p.recibo).includes(n0) || numsDe(p.comprobante).includes(n0)));
     if (!manual.length) { const mf = libres.filter(p => toYMD(p.fecha) === toYMD(r.fecha)); if (mf.length && Math.abs(r2(mf.reduce((s2, p) => s2 + num(p.cantidad), 0)) - monto) < 0.005) manual = mf; }
+    if (manual.length) await Store.saveMany('cafetines', manual.map(p => Object.assign({}, p, { rec_id: r._id, arr_id: a._id })));
   }
-  const actuales = prev.length ? prev : manual;
-  const igual = actuales.length && actuales.every(p => p.arr_id === a._id || norm(p.nombre) === norm(a.nombre)) && Math.abs(r2(actuales.reduce((s2, p) => s2 + num(p.cantidad), 0)) - monto) < 0.005;
-  if (igual) { /* mismo monto: se conservan los meses y solo se actualizan los datos del recibo */
-    const ch = actuales.map(p => Object.assign({}, p, base, { mes: p.mes, cantidad: p.cantidad }));
-    await Store.saveMany('cafetines', ch);
+  const resto = r2(monto - manual.reduce((s2, p) => s2 + num(p.cantidad), 0));
+  if (resto < 0.005) {
+    if (autos.length) await soltar(autos, []);
+    if (resto < -0.005) return `⚠ El recibo ${recNum(r)} dice ${money(monto)} pero los pagos registrados a mano suman ${money(monto - resto)}. Revise el detalle de ${a.nombre}.`;
     return manual.length ? `enlazado con ${manual.length} pago(s) de arrendamiento que ya existían` : '';
   }
-  if (manual.length) { /* pagos a mano con monto distinto: se enlazan tal cual (nunca se les cambia mes ni monto) */
-    await Store.saveMany('cafetines', manual.map(p => Object.assign({}, p, { rec_id: r._id, arr_id: a._id })));
-    const dif = r2(monto - manual.reduce((s2, p) => s2 + num(p.cantidad), 0));
-    return `⚠ Enlazado con ${manual.length} pago(s) a mano, pero el recibo ${recNum(r)} dice ${money(monto)} y los pagos suman ${money(r2(monto - dif))}. Revise el detalle de ${a.nombre}.`;
-  }
-  /* Si el arrendatario ya tiene pagados los meses del contrato, este recibo casi seguro ya está registrado a mano: no se duplica. */
-  if (!actuales.length && libreArr(a) + 0.004 < monto) return `⚠ Posible duplicado: ${a.nombre} ya tiene pagados los meses del contrato; el recibo ${recNum(r)} no se agregó. Revise si ese pago ya está registrado a mano.`;
-  const ms = repartirArr(a, monto, actuales, mesesDeTexto(String(r.concepto || '') + ' ' + String(r.obs || ''))), grupo = ms.length > 1 ? r._id : '';
-  const nuevos = ms.map(([m, v], i) => Object.assign({}, actuales[i] || {}, base, { _id: actuales[i] ? actuales[i]._id : undefined, mes: cap(MESES[m - 1]), cantidad: v, grupo, obs: (actuales[i] && actuales[i].obs) || '' }));
-  nuevos.forEach(x => { if (!x._id) delete x._id; });
-  const quitar = actuales.slice(ms.length).map(p => Object.assign({}, p, { _del: 1 }));
-  await Store.saveMany('cafetines', nuevos.concat(quitar));
+  if (manual.length) { if (autos.length) await soltar(autos, []); return `⚠ El recibo ${recNum(r)} dice ${money(monto)} y los pagos a mano suman ${money(monto - resto)}. No se agregó la diferencia; revise el detalle de ${a.nombre}.`; }
+  /* Solo pagos del sistema: si no hay meses libres, es casi seguro un pago ya registrado a mano → no se duplica. */
+  const yaAuto = r2(autos.reduce((s2, p) => s2 + num(p.cantidad), 0));
+  if (libreArr(a) + yaAuto + 0.004 < resto) { if (autos.length) await soltar(autos, []); return `⚠ Posible duplicado: ${a.nombre} ya tiene pagados los meses del contrato; el recibo ${recNum(r)} no se agregó. Revise si ese pago ya está registrado a mano.`; }
+  const ms = repartirArr(a, resto, autos, mesesDeTexto(String(r.concepto || '') + ' ' + String(r.obs || ''))), grupo = ms.length > 1 ? r._id : '';
+  const nuevos = ms.map(([m, v], i) => { const o = Object.assign({}, autos[i] || {}, base, { mes: cap(MESES[m - 1]), cantidad: v, grupo, auto: 1, obs: (autos[i] && autos[i].obs) || '' }); if (!autos[i]) delete o._id; return o; });
+  await Store.saveMany('cafetines', nuevos.concat(autos.slice(ms.length).map(p => Object.assign({}, p, { _del: 1 }))));
   return `arrendamiento de ${a.nombre}: ${ms.map(([m, v]) => cap(MESES[m - 1]).slice(0, 3) + ' ' + money(v)).join(', ')}`;
 }
 /** Recibos del año con alquiler que todavía no tienen sus pagos de arrendamiento enlazados. */
