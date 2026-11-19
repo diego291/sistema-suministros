@@ -81,8 +81,19 @@ function controlRecibos(serie) {
   });
   return { all, min, max, series, saltados, talonarios, repetidos, alertas, nulos: all.filter(r => isTrue(r.nulo)).length };
 }
+/** Hora en que se digitó un recibo (va dentro de su identificador). Los importados no la tienen. */
+const horaCreado = r => { const t = parseInt(String(r._id || '').slice(0, 8), 36); return t > 1.7e12 && t < 2.2e12 ? new Date(t) : null; };
+const ymdLocal = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+/** Resumen de lo digitado un día: primero, último, cuántos, N° que faltan dentro del rango (por serie) y fechas de los recibos. */
+function digitadosDia(rs, dia) {
+  const xs = rs.map(r => ({ r, t: horaCreado(r) })).filter(x => x.t && ymdLocal(x.t) === dia).sort((a, b) => a.t - b.t);
+  const series = {}; xs.forEach(x => { const g = x.r.serie || ''; (series[g] = series[g] || []).push(num(x.r.numero)); });
+  const faltan = {}; for (const g in series) { const ns = new Set(series[g]), mn = Math.min(...series[g]), mx = Math.max(...series[g]); const f = []; if (mx - mn < 5000) for (let n = mn; n <= mx; n++) if (!ns.has(n)) f.push(n); faltan[g] = { mn, mx, f }; }
+  const fechas = {}; xs.forEach(x => { const f = toYMD(x.r.fecha); fechas[f] = (fechas[f] || 0) + 1; });
+  return { xs, faltan, fechas, total: r2(xs.filter(x => !isTrue(x.r.nulo)).reduce((a, x) => a + num(x.r.pago), 0)) };
+}
 defView('r:control', 'Control de digitación de recibos', el => {
-  let serie = LS.get('ctrlSerie', '');
+  let serie = LS.get('ctrlSerie', ''), dia = today();
   const draw = () => {
     const c = controlRecibos(serie); const t = today(), mes = t.slice(0, 7);
     const sk = Object.keys(c.series).sort();
@@ -100,11 +111,17 @@ defView('r:control', 'Control de digitación de recibos', el => {
     ${c.saltados.length ? `<div class="alert bad"><b>N° saltados:</b> ${c.saltados.slice(0, 300).join(', ')}${c.saltados.length > 300 ? '…' : ''}</div>` : ''}
     ${c.repetidos.length ? `<div class="alert bad"><b>N° repetidos (${c.repetidos.length}):</b> ${c.repetidos.slice(0, 200).join(', ')}${c.repetidos.length > 200 ? '…' : ''}${(duplicadosExactos().recibos || []).length ? `<div style="margin-top:8px"><b>${duplicadosExactos().recibos.length} son copias idénticas</b> (mismo nombre, fecha, concepto y montos). <button class="btn sm" id="cDup">🧹 Eliminar copias idénticas</button></div>` : ''}</div>` : ''}
     ${c.talonarios.length ? `<div class="alert info"><b>Saltos grandes de numeración</b> (cambio de talonario o número mal digitado): ${c.talonarios.join(' · ')}</div>` : ''}
+    ${(() => { const d = digitadosDia(c.all, dia), hm = t => t.toLocaleTimeString('es-SV', { hour: 'numeric', minute: '2-digit' }), p = d.xs[0], u = d.xs[d.xs.length - 1];
+      return `<div class="card"><h3 style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">⌨️ Digitados el día <input type="date" class="in" id="cDia" value="${dia}" style="width:auto"></h3>
+      ${d.xs.length ? `<div class="kpis">${k('Primer recibo del día', `${esc(recNum(p.r))}`, `${hm(p.t)} · ${esc(String(p.r.nombre || '').slice(0, 30))}`)}${k('Último recibo del día', `${esc(recNum(u.r))}`, `${hm(u.t)} · ${esc(String(u.r.nombre || '').slice(0, 30))}`)}${k('Recibos digitados', d.xs.length, money(d.total))}${k('N° que faltan', Object.values(d.faltan).reduce((a, x) => a + x.f.length, 0), 'dentro del rango del día', Object.values(d.faltan).some(x => x.f.length) ? 'bad' : 'ok')}</div>
+        <p class="muted" style="margin:6px 0 0;font-size:12.5px">${Object.entries(d.faltan).map(([g, x]) => `${g ? 'Serie ' + esc(g) + ': ' : ''}del ${x.mn} al ${x.mx}${x.f.length ? ` · <b class="bad-t">faltan ${x.f.slice(0, 60).join(', ')}${x.f.length > 60 ? '…' : ''}</b>` : ' · sin saltos'}`).join('<br>')}<br>Fecha de los recibos: ${Object.entries(d.fechas).sort().map(([f, n]) => `${fdate(f)} (${n})`).join(' · ')}</p>`
+        : '<p class="muted" style="margin:0">No se digitaron recibos ese día.</p>'}</div>`; })()}
     <div class="card"><h3>Lista de alertas <small>(${c.alertas.length}) · clic para corregir</small></h3>
     ${c.alertas.length ? `<div class="tw"><table class="t"><thead><tr><th>N° recibo</th><th>Fecha</th><th>Nombre</th><th>Grado</th><th>Concepto</th><th class="r">Pago</th><th class="r">Suma rubros</th><th class="r">Diferencia</th><th>Alerta</th><th></th></tr></thead><tbody>
     ${c.alertas.sort((a, b) => String(a.r.serie || '').localeCompare(b.r.serie || '') || num(a.r.numero) - num(b.r.numero)).map(x => `<tr data-id="${x.r._id}" style="cursor:pointer"><td>${MOD.recibos.rowIcon(x.r)}${recNum(x.r)}</td><td>${fdate(x.r.fecha)}</td><td>${esc(x.r.nombre)}</td><td>${esc((x.r.grado || '') + ' ' + (x.r.seccion || ''))}</td><td>${esc(x.r.concepto)}</td><td class="num">${money(x.r.pago)}</td><td class="num">${money(x.suma)}</td><td class="num">${money(num(x.r.pago) - x.suma)}</td><td><span class="tag warn">${esc(x.a)}</span></td><td>${/NOMBRE NO EST/.test(x.a) ? `<button class="btn sm" data-reg="${esc(x.r.nombre)}" title="Registrar como padre/madre, docente, externo, encargada de cafetín o estudiante">➕ Registrar</button>` : ''}</td></tr>`).join('')}</tbody></table></div>` : '<div class="alert ok">✔ Sin alertas.</div>'}</div>`;
     $$('[data-se]', el).forEach(ch => ch.onclick = () => { serie = ch.dataset.se; LS.set('ctrlSerie', serie); draw(); });
     $('#cNew', el).onclick = () => openRecibo(null, draw);
+    const cdi = $('#cDia', el); if (cdi) cdi.onchange = () => { dia = cdi.value || today(); draw(); };
     const cd = $('#cDup', el); if (cd) cd.onclick = async () => { const d = duplicadosExactos().recibos; if (!(await confirmBox(`Se eliminarán ${d.length} recibo(s) duplicado(s) idénticos; se conserva uno de cada uno.`, 'Eliminar'))) return; await Store.saveMany('recibos', d.map(x => Object.assign({}, x, { _del: 1 }))); toast(`✔ ${d.length} duplicado(s) eliminado(s)`, 'ok'); draw(); };
     $$('tr[data-id]', el).forEach(tr => tr.onclick = () => openRecibo(Store.get('recibos', tr.dataset.id), draw));
     $$('[data-reg]', el).forEach(b => b.onclick = e => { e.stopPropagation(); registrarPagador(b.dataset.reg, draw); });
