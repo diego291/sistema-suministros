@@ -390,13 +390,14 @@ function openRecibo(row, done, pre) {
     if (!r.est_id) { const e = Store.all('estudiantes').find(x => (r.nie && String(x.nie) === String(r.nie)) || norm(x.nombre) === norm(r.nombre)); if (e) r.est_id = e._id; }
     const saved = await Store.save('recibos', r); LS.set('lastFechaRec', { f: r.fecha, dia: today() }); LS.set('lastSerie', r.serie);
     await syncVentasRecibo(saved);
-    toast(`Recibo ${recNum(r)} guardado ✔`, 'ok', 1500);
+    const ar = await syncArrRecibo(saved);
+    toast(`Recibo ${recNum(r)} guardado ✔${ar ? ' · ' + ar : ''}`, ar && /⚠/.test(ar) ? 'bad' : 'ok', ar ? 5000 : 1500);
     done && done();
     if (nuevo) setTimeout(() => openRecibo(null, done), 60);
     return true;
   };
   const btns = [];
-  if (!isNew) btns.push({ l: '🗑️ Eliminar', danger: 1, left: 1, fn: async () => { if (!(await confirmBox('¿Eliminar este recibo?', 'Eliminar'))) return false; await Store.remove('recibos', row._id); await syncVentasRecibo(Object.assign({}, row, { _del: 1 })); done && done(); return true; } });
+  if (!isNew) btns.push({ l: '🗑️ Eliminar', danger: 1, left: 1, fn: async () => { if (!(await confirmBox('¿Eliminar este recibo?', 'Eliminar'))) return false; await Store.remove('recibos', row._id); await syncVentasRecibo(Object.assign({}, row, { _del: 1 })); await syncArrRecibo(Object.assign({}, row, { _del: 1 })); done && done(); return true; } });
   btns.push({ l: 'Cancelar' }, { l: '💾 Guardar', fn: () => guardar(false) }, { l: '💾 Guardar y nuevo (Ctrl+Enter)', pri: 1, fn: () => guardar(true) });
   const m = modal((isNew ? 'Nuevo recibo de ingreso' : 'Recibo ' + recNum(row)), html, btns, { nofocus: true });
   const box = $('.mb', m);
@@ -590,12 +591,12 @@ defMod({ key: 'cafetines', label: 'Pagos de arrendamiento', fields: [
   { k: 'categoria', l: 'Categoría', t: 'select', o: 'arr_categorias', def: 'Cafetín' }, { k: 'concepto', l: 'Concepto', t: 'text', def: 'Alquiler de cafetín' },
   { k: 'mes', l: 'Mes que cancela', t: 'select', o: 'meses' }, { k: 'recibo', l: 'N° de recibo', t: 'text' },
   { k: 'fecha_banco', l: 'Fecha en banco', t: 'date' }, { k: 'fecha', l: 'Fecha de recibido', t: 'date', def: today },
-  { k: 'cantidad', l: 'Cantidad', t: 'money', req: 1 }, { k: 'comprobante', l: 'N° de comprobante', t: 'text' }, { k: 'obs', l: 'Observaciones', t: 'textarea', rows: 2 }, { k: 'arr_id', l: 'id arrendatario', t: 'text', hide: 1 }, { k: 'grupo', l: 'Grupo (recibo de varios meses)', t: 'text', hide: 1 }],
+  { k: 'cantidad', l: 'Cantidad', t: 'money', req: 1 }, { k: 'comprobante', l: 'N° de comprobante', t: 'text' }, { k: 'obs', l: 'Observaciones', t: 'textarea', rows: 2 }, { k: 'arr_id', l: 'id arrendatario', t: 'text', hide: 1 }, { k: 'grupo', l: 'Grupo (recibo de varios meses)', t: 'text', hide: 1 }, { k: 'rec_id', l: 'id recibo', t: 'text', hide: 1 }],
   table: ['nombre', 'categoria', 'concepto', 'mes', 'recibo', 'fecha_banco', 'fecha', 'cantidad', 'comprobante'], filters: ['categoria', 'nombre', 'mes'], dateField: 'fecha', sums: ['cantidad'], sort: { k: 'fecha', dir: -1 },
   beforeSave: r => { if (!r.arr_id) { const a = Store.all('arrendatarios').find(x => norm(x.nombre) === norm(r.nombre)); if (a) { r.arr_id = a._id; if (!r.categoria) r.categoria = a.categoria; } } },
   listButtons: [{ l: '📒 Estado de cuenta', fn: () => go('t:arrcuenta') }, { l: '👥 Arrendatarios', fn: () => go('m:arrendatarios') }],
   onNew: done => openPagoArr({}, done),
-  rowIcon: r => (r.grupo ? `<span title="Recibo ${esc(r.recibo || '')} cubre varios meses">🔗</span> ` : '') + (String(r.obs || '').trim() ? `<span title="${esc(r.obs)}">📝</span> ` : '') });
+  rowIcon: r => (r.rec_id ? `<span title="Viene del recibo ${esc(r.recibo || '')}: se actualiza solo al editar el recibo">🧾</span> ` : r.grupo ? `<span title="Recibo ${esc(r.recibo || '')} cubre varios meses">🔗</span> ` : '') + (String(r.obs || '').trim() ? `<span title="${esc(r.obs)}">📝</span> ` : '') });
 
 /** Pago de arrendamiento: un recibo puede cubrir varios meses → se crea un registro por cada mes */
 function openPagoArr(pref, done) {
@@ -828,6 +829,58 @@ async function syncVentasRecibo(r) {
   const del = prev.filter(v => !out.some(o => o._id === v._id)).map(v => Object.assign({}, v, { _del: 1 }));
   if (out.length || del.length) await Store.saveMany('unif_ventas', out.concat(del));
 }
+/* ======================= Recibos ↔ pagos de arrendamiento (cafetines) =======================
+   Un recibo con el rubro de alquiler crea solo los pagos del arrendatario: reparte el monto en los
+   meses que debe (del más antiguo al más reciente) y queda enlazado (rec_id). Si se edita, anula o
+   elimina el recibo, los pagos se actualizan solos. Los pagos hechos a mano con el mismo N° de recibo se adoptan. */
+const rubrosArr = () => rubrosOn().filter(rb => rb.k === 'cafetin' || /cafet|alquiler|arrend/i.test(rb.l));
+const montoArrDe = r => r2(rubrosArr().reduce((a, rb) => a + num(r['r_' + rb.k]), 0));
+const soloDig = x => String(x ?? '').replace(/\D/g, '').replace(/^0+/, '');
+function arrDeRecibo(r) {
+  const n = norm(r.nombre); if (!n) return null;
+  const xs = Store.all('arrendatarios');
+  return xs.find(a => norm(a.nombre) === n) || xs.find(a => String(a.encargados || '').split(/\n|,|;/).some(x => norm(x.trim()) === n)) || null;
+}
+/** Reparte un monto en los meses del contrato que faltan, del más antiguo al más reciente. */
+function repartirArr(a, monto, sin) {
+  const ec = estadoCuentaArr()[a._id]; const pag = ec ? ec.meses.slice() : Array(12).fill(0);
+  (sin || []).forEach(p => { const m = MESES.indexOf(norm(p.mes)); if (m >= 0) pag[m] -= num(p.cantidad); });
+  const cuota = num(a.cuota), desde = ec ? Math.min(ec.desde, 12) : 1, hasta = ec ? Math.max(ec.hastaC, desde) : 12;
+  const out = []; let resto = r2(monto);
+  for (let m = desde; m <= hasta && resto > 0.004; m++) { const f = r2(cuota - pag[m - 1]); if (f <= 0.004) continue; const v = r2(Math.min(f, resto)); out.push([m, v]); resto = r2(resto - v); }
+  if (resto > 0.004) { if (out.length) out[out.length - 1][1] = r2(out[out.length - 1][1] + resto); else out.push([Math.min(12, (dobj(today()) || new Date()).getMonth() + 1), resto]); }
+  return out;
+}
+async function syncArrRecibo(r) {
+  const prev = Store.all('cafetines').filter(p => p.rec_id === r._id);
+  const monto = (r._del || isTrue(r.nulo)) ? 0 : montoArrDe(r);
+  if (!monto) { if (prev.length) { await Store.saveMany('cafetines', prev.map(p => Object.assign({}, p, { _del: 1 }))); return 'se quitaron sus pagos de arrendamiento'; } return ''; }
+  const a = arrDeRecibo(r);
+  if (!a) return `⚠ No encontré el arrendatario "${r.nombre}". Agréguelo (o como encargada) en Arrendatarios para enlazar el pago.`;
+  const num_ = recNum(r), base = { nombre: a.nombre, arr_id: a._id, categoria: a.categoria || 'Cafetín', concepto: 'Alquiler de ' + String(a.categoria || 'local').toLowerCase() + (a.espacio ? ' (' + a.espacio + ')' : ''), recibo: num_, fecha: r.fecha, rec_id: r._id };
+  /* Pagos registrados a mano antes con el mismo N° de recibo: se enlazan en vez de duplicarlos */
+  const manual = prev.length ? [] : Store.all('cafetines').filter(p => !p.rec_id && (p.arr_id === a._id || norm(p.nombre) === norm(a.nombre)) && soloDig(p.recibo) && soloDig(p.recibo) === soloDig(r.numero));
+  const actuales = prev.length ? prev : manual;
+  const igual = actuales.length && actuales.every(p => p.arr_id === a._id || norm(p.nombre) === norm(a.nombre)) && Math.abs(r2(actuales.reduce((s, p) => s + num(p.cantidad), 0)) - monto) < 0.005;
+  if (igual) { /* mismo monto: se conservan los meses y solo se actualizan los datos del recibo */
+    const ch = actuales.map(p => Object.assign({}, p, base, { mes: p.mes, cantidad: p.cantidad }));
+    await Store.saveMany('cafetines', ch);
+    return manual.length ? `enlazado con ${manual.length} pago(s) de arrendamiento que ya existían` : '';
+  }
+  const ms = repartirArr(a, monto, actuales), grupo = ms.length > 1 ? r._id : '';
+  const nuevos = ms.map(([m, v], i) => Object.assign({}, actuales[i] || {}, base, { _id: actuales[i] ? actuales[i]._id : undefined, mes: cap(MESES[m - 1]), cantidad: v, grupo, obs: (actuales[i] && actuales[i].obs) || '' }));
+  nuevos.forEach(x => { if (!x._id) delete x._id; });
+  const quitar = actuales.slice(ms.length).map(p => Object.assign({}, p, { _del: 1 }));
+  await Store.saveMany('cafetines', nuevos.concat(quitar));
+  return `arrendamiento de ${a.nombre}: ${ms.map(([m, v]) => cap(MESES[m - 1]).slice(0, 3) + ' ' + money(v)).join(', ')}`;
+}
+/** Recibos del año con alquiler que todavía no tienen sus pagos de arrendamiento enlazados. */
+function recibosArrSinEnlace() {
+  if (!rubrosArr().length) return [];
+  const enl = new Set(Store.all('cafetines').map(p => p.rec_id).filter(Boolean));
+  return Store.all('recibos').filter(r => !isTrue(r.nulo) && montoArrDe(r) > 0 && !enl.has(r._id)).sort((a, b) => String(a.fecha).localeCompare(b.fecha) || num(a.numero) - num(b.numero));
+}
+
 defMod({ key: 'unif_pedidos', label: 'Pedidos a proveedor', fields: [
   { k: 'pedido', l: 'Pedido N°', t: 'number', req: 1, plain: 1, def: () => Math.max(1, ...Store.all('unif_pedidos').map(r => num(r.pedido))) },
   { k: 'fecha', l: 'Fecha', t: 'date', def: today }, { k: 'nivel', l: 'Nivel', t: 'select', o: 'unif_niveles' },
@@ -923,8 +976,8 @@ function dispTalla(prod, talla) {
 }
 
 /* Borrar recibos en lote también quita sus ventas de uniformes */
-MOD.recibos.afterDelete = async rows => { for (const r of rows) if ((r.unif || []).length) await syncVentasRecibo(Object.assign({}, r, { _del: 1 })); };
-MOD.recibos.afterRestore = async rows => { for (const r of rows) if ((r.unif || []).length) await syncVentasRecibo(Object.assign({}, r, { _del: 0 })); };
+MOD.recibos.afterDelete = async rows => { for (const r of rows) { if ((r.unif || []).length) await syncVentasRecibo(Object.assign({}, r, { _del: 1 })); await syncArrRecibo(Object.assign({}, r, { _del: 1 })); } };
+MOD.recibos.afterRestore = async rows => { for (const r of rows) { if ((r.unif || []).length) await syncVentasRecibo(Object.assign({}, r, { _del: 0 })); await syncArrRecibo(Object.assign({}, r, { _del: 0 })); } };
 MOD.cajachica.bulkEdit = ['fecha', 'tipo', 'categoria', 'comprobante', 'documento', 'concepto', 'proveedor', 'debe', 'haber'];
 MOD.cajachica.selectBy = { l: 'Seleccionar caja', val: r => cv(r, 'caja') };
 MOD.cajachica.bulkNote = 'El saldo y las cajas se recalculan al guardar.';
