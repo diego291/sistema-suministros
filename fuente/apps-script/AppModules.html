@@ -836,12 +836,21 @@ async function syncVentasRecibo(r) {
 const rubrosArr = () => rubrosOn().filter(rb => rb.k === 'cafetin' || /cafet|alquiler|arrend/i.test(rb.l));
 const montoArrDe = r => r2(rubrosArr().reduce((a, rb) => a + num(r['r_' + rb.k]), 0));
 const soloDig = x => String(x ?? '').replace(/\D/g, '').replace(/^0+/, '');
+/** Números que aparecen en un texto ('B-15032, 15033' → ['15032','15033']) */
+const numsDe = x => (String(x ?? '').match(/\d+/g) || []).map(t => t.replace(/^0+/, '')).filter(Boolean);
 function arrDeRecibo(r) {
   const n = norm(r.nombre); if (!n) return null;
   const xs = Store.all('arrendatarios');
   return xs.find(a => norm(a.nombre) === n) || xs.find(a => String(a.encargados || '').split(/\n|,|;/).some(x => norm(x.trim()) === n)) || null;
 }
 /** Reparte un monto en los meses del contrato que faltan, del más antiguo al más reciente. */
+/** Lo que falta por pagar de todo el contrato (meses vencidos y por vencer). */
+function libreArr(a) { const ec = estadoCuentaArr()[a._id]; if (!ec) return 0; let f = 0; for (let m = Math.min(ec.desde, 12); m <= Math.max(ec.hastaC, ec.desde); m++) f += Math.max(0, num(a.cuota) - ec.meses[m - 1]); return r2(f); }
+/** Arreglo del 19/11/2026: el primer enlace masivo creó pagos repetidos de recibos que ya estaban registrados a mano.
+    Esos pagos se reconocen porque tienen rec_id y su id se creó después de publicar el enlace (10:38). Se quitan una sola vez. */
+const ARR_LINK_DESDE = Date.parse('2026-11-19T16:38:00Z');
+function pagosArrDelEnlace() { return Store.all('cafetines').filter(p => p.rec_id && parseInt(String(p._id).slice(0, 8), 36) >= ARR_LINK_DESDE && parseInt(String(p._id).slice(0, 8), 36) < ARR_LINK_DESDE + 3 * 3600e3 && !isTrue(p.fijo)); }
+async function deshacerEnlaceArr() { const xs = pagosArrDelEnlace(); if (xs.length) await Store.saveMany('cafetines', xs.map(p => Object.assign({}, p, { _del: 1 }))); return xs.length; }
 function repartirArr(a, monto, sin) {
   const ec = estadoCuentaArr()[a._id]; const pag = ec ? ec.meses.slice() : Array(12).fill(0);
   (sin || []).forEach(p => { const m = MESES.indexOf(norm(p.mes)); if (m >= 0) pag[m] -= num(p.cantidad); });
@@ -858,15 +867,24 @@ async function syncArrRecibo(r) {
   const a = arrDeRecibo(r);
   if (!a) return `⚠ No encontré el arrendatario "${r.nombre}". Agréguelo (o como encargada) en Arrendatarios para enlazar el pago.`;
   const num_ = recNum(r), base = { nombre: a.nombre, arr_id: a._id, categoria: a.categoria || 'Cafetín', concepto: 'Alquiler de ' + String(a.categoria || 'local').toLowerCase() + (a.espacio ? ' (' + a.espacio + ')' : ''), recibo: num_, fecha: r.fecha, rec_id: r._id };
-  /* Pagos registrados a mano antes con el mismo N° de recibo: se enlazan en vez de duplicarlos */
-  const manual = prev.length ? [] : Store.all('cafetines').filter(p => !p.rec_id && (p.arr_id === a._id || norm(p.nombre) === norm(a.nombre)) && soloDig(p.recibo) && soloDig(p.recibo) === soloDig(r.numero));
+  /* Pagos registrados a mano antes: se enlazan en vez de duplicarlos.
+     1) los que mencionan este N° de recibo (o en el comprobante); 2) si no, los de la misma fecha que suman lo mismo. */
+  let manual = [];
+  if (!prev.length) {
+    const libres = Store.all('cafetines').filter(p => !p.rec_id && (p.arr_id === a._id || norm(p.nombre) === norm(a.nombre)));
+    const n0 = soloDig(r.numero);
+    manual = libres.filter(p => n0 && (numsDe(p.recibo).includes(n0) || numsDe(p.comprobante).includes(n0)));
+    if (!manual.length) { const mf = libres.filter(p => toYMD(p.fecha) === toYMD(r.fecha)); if (mf.length && Math.abs(r2(mf.reduce((s2, p) => s2 + num(p.cantidad), 0)) - monto) < 0.005) manual = mf; }
+  }
   const actuales = prev.length ? prev : manual;
-  const igual = actuales.length && actuales.every(p => p.arr_id === a._id || norm(p.nombre) === norm(a.nombre)) && Math.abs(r2(actuales.reduce((s, p) => s + num(p.cantidad), 0)) - monto) < 0.005;
+  const igual = actuales.length && actuales.every(p => p.arr_id === a._id || norm(p.nombre) === norm(a.nombre)) && Math.abs(r2(actuales.reduce((s2, p) => s2 + num(p.cantidad), 0)) - monto) < 0.005;
   if (igual) { /* mismo monto: se conservan los meses y solo se actualizan los datos del recibo */
     const ch = actuales.map(p => Object.assign({}, p, base, { mes: p.mes, cantidad: p.cantidad }));
     await Store.saveMany('cafetines', ch);
     return manual.length ? `enlazado con ${manual.length} pago(s) de arrendamiento que ya existían` : '';
   }
+  /* Si el arrendatario ya tiene pagados los meses del contrato, este recibo casi seguro ya está registrado a mano: no se duplica. */
+  if (!actuales.length && libreArr(a) + 0.004 < monto) return `⚠ Posible duplicado: ${a.nombre} ya tiene pagados los meses del contrato; el recibo ${recNum(r)} no se agregó. Revise si ese pago ya está registrado a mano.`;
   const ms = repartirArr(a, monto, actuales), grupo = ms.length > 1 ? r._id : '';
   const nuevos = ms.map(([m, v], i) => Object.assign({}, actuales[i] || {}, base, { _id: actuales[i] ? actuales[i]._id : undefined, mes: cap(MESES[m - 1]), cantidad: v, grupo, obs: (actuales[i] && actuales[i].obs) || '' }));
   nuevos.forEach(x => { if (!x._id) delete x._id; });

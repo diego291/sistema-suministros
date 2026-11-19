@@ -767,6 +767,10 @@ function paginaSolvencia(x, o, t) {
 }
 defView('t:arrcuenta', 'Estado de cuenta de arrendatarios', (el, p) => {
   let cat = LS.get('arrCat', '');
+  /* Una sola vez: quita los pagos repetidos que creó el primer enlace masivo de recibos */
+  if (!(CFG.arreglos || {}).arrLink1 && pagosArrDelEnlace().length) setTimeout(async () => {
+    const n = await deshacerEnlaceArr(); CFG.arreglos = Object.assign({}, CFG.arreglos, { arrLink1: 1 }); try { await saveCfg(); } catch (e) {}
+    toast(`Se quitaron ${n} pago(s) repetidos que había creado el enlace de recibos. Los pagos que usted registró se conservan.`, 'ok', 9000); draw(); }, 0);
   const draw = () => {
     const ec = estadoCuentaArr();
     let filas = Object.values(ec).filter(x => !cat || x.a.categoria === cat).sort((a, b) => String(a.a.categoria).localeCompare(b.a.categoria) || String(a.a.nombre).localeCompare(b.a.nombre));
@@ -794,14 +798,14 @@ defView('t:arrcuenta', 'Estado de cuenta de arrendatarios', (el, p) => {
     $('#aPay', el).onclick = () => openPagoArr({}, draw);
     const lk = $('#aLink', el); if (lk) lk.onclick = async () => {
       const xs = recibosArrSinEnlace(), dd = recibosArrDudosos();
-      const filas = xs.map(r => { const a = arrDeRecibo(r); return `<tr><td>${esc(recNum(r))}</td><td>${fdate(r.fecha)}</td><td>${esc(r.nombre)}</td><td>${a ? esc(a.nombre) : '<span class="bad-t">No identificado</span>'}</td><td class="num">${money(montoArrDe(r))}</td></tr>`; }).join('');
+      const filas = xs.map(r => { const a = arrDeRecibo(r); const dup = a && !Store.all('cafetines').some(p => !p.rec_id && (p.arr_id === a._id) && (numsDe(p.recibo).includes(soloDig(r.numero)) || toYMD(p.fecha) === toYMD(r.fecha))) && libreArr(a) + 0.004 < montoArrDe(r); return `<tr><td>${esc(recNum(r))}</td><td>${fdate(r.fecha)}</td><td>${esc(r.nombre)}</td><td>${a ? esc(a.nombre) + (dup ? '<br><span class="warn-t" style="font-size:11px">Posible duplicado: no se agregará</span>' : '') : '<span class="bad-t">No identificado</span>'}</td><td class="num">${money(montoArrDe(r))}</td></tr>`; }).join('');
       const filasD = dd.map(r => `<tr><td>${esc(recNum(r))}</td><td>${fdate(r.fecha)}</td><td>${esc(r.nombre)}</td><td style="font-size:12px">${esc(r.concepto || '')}</td><td class="num">${money(r.pago)}</td></tr>`).join('');
-      const html = (xs.length ? `<p style="margin:0 0 8px"><b>${xs.length} recibo(s) cobran alquiler y aún no están en el estado de cuenta.</b> Se crearán sus pagos (los que registró a mano con el mismo N° de recibo se enlazan, no se duplican).</p><div style="max-height:34vh;overflow:auto"><table class="t"><thead><tr><th>Recibo</th><th>Fecha</th><th>Pagador</th><th>Arrendatario</th><th class="r">Alquiler</th></tr></thead><tbody>${filas}</tbody></table></div>` : '<p style="margin:0 0 8px">✔ Todos los recibos con rubro de alquiler ya están en el estado de cuenta.</p>')
+      const html = (xs.length ? `<p style="margin:0 0 8px"><b>${xs.length} recibo(s) cobran alquiler y aún no están en el estado de cuenta.</b> Se enlazan con los pagos que registró a mano (mismo N° de recibo o misma fecha y monto); si el arrendatario ya tiene pagados todos sus meses, no se agrega nada para no duplicar.</p><div style="max-height:34vh;overflow:auto"><table class="t"><thead><tr><th>Recibo</th><th>Fecha</th><th>Pagador</th><th>Arrendatario</th><th class="r">Alquiler</th></tr></thead><tbody>${filas}</tbody></table></div>` : '<p style="margin:0 0 8px">✔ Todos los recibos con rubro de alquiler ya están en el estado de cuenta.</p>')
         + (dd.length ? `<p style="margin:14px 0 8px"><b>⚠ ${dd.length} recibo(s) a revisar:</b> parecen de un cafetín (pagador o concepto) pero el monto no está en el rubro de alquiler, por eso no se reflejan. Ábralos desde Recibos, pase el monto al rubro de alquiler y se enlazan solos.</p><div style="max-height:30vh;overflow:auto"><table class="t"><thead><tr><th>Recibo</th><th>Fecha</th><th>Pagador</th><th>Concepto</th><th class="r">Pago</th></tr></thead><tbody>${filasD}</tbody></table></div>` : '');
       if (!xs.length) { modal('Revisión de recibos de arrendamiento', html, [{ l: 'Cerrar', pri: 1 }]); return; }
       if (!(await confirmBox(html, 'Enlazar ' + xs.length))) return;
       let ok = 0, malos = 0; for (const r of xs) { const m = await syncArrRecibo(r); if (/⚠/.test(m)) malos++; else ok++; }
-      toast(`🔗 ${ok} recibo(s) enlazados${malos ? ` · ${malos} sin arrendatario identificado (revise el nombre del pagador)` : ''}`, malos ? 'bad' : 'ok', 6000); draw();
+      toast(`🔗 ${ok} recibo(s) enlazados${malos ? ` · ${malos} no se agregaron (arrendatario no identificado o posible duplicado)` : ''}`, malos ? 'bad' : 'ok', 7000); draw();
     };
     $$('.arr-card[data-a]', el).forEach(tr => tr.onclick = e => {
       const x = ec[tr.dataset.a]; const a = x.a; const bt = e.target.closest('button'); if (!bt) return;
