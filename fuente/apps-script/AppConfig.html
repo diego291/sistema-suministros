@@ -448,6 +448,7 @@ defView('cfg:import', 'Importar y exportar', el => {
     reemplazar=true: borra antes los datos de este equipo (se usa en el demo). */
 async function restaurarRespaldo(d, reemplazar) {
   if (reemplazar) { const keep = { seedVer: await IDB.get('seedVer'), year: await IDB.get('year') }; await IDB.clearAll(); Store.queued = new Set(); for (const k in keep) if (keep[k] !== undefined) await IDB.set(k, keep[k]); }
+  if (d.ahora) { const t = Date.now(); d.rows.forEach((o, i) => { o.d._upd = t + i * 0.001; }); } /* archivo de corrección: su versión manda sobre la actual */
   const q = d.rows.map(o => ({ k: o.k, b: o.b, mod: o.b.split('|')[1], d: o.d }));
   for (let i = 0; i < d.rows.length; i += 2000) { await IDB.put('rows', d.rows.slice(i, i + 2000)); await IDB.put('queue', q.slice(i, i + 2000)); }
   const ys = LS.get('localYears', []); d.rows.forEach(o => { const y = Number(o.b.split('|')[0]); if (y && !ys.includes(y)) ys.push(y); }); LS.set('localYears', ys);

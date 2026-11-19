@@ -797,7 +797,10 @@ async function repararPagosArr() {
   const out = [], save = [], hoy = fdate(today()), marca = p => [String(p.obs || '').trim(), `Corregido por el sistema ${hoy}`].filter(Boolean).join(' · ');
   const g = {}; Store.all('cafetines').filter(p => p.rec_id).forEach(p => (g[p.rec_id] = g[p.rec_id] || []).push(p));
   for (const rid in g) {
-    let ps = g[rid].map(p => Object.assign({}, p)); const r = Store.get('recibos', rid);
+    const r = Store.get('recibos', rid);
+    /* Pagos registrados a mano: NUNCA se modifican. Si su recibo no les corresponde, solo se desenlazan. */
+    g[rid].filter(p => !pagoAuto(p)).forEach(p => { const du = r && !r._del && !isTrue(r.nulo) && montoArrDe(r) ? (arrDeRecibo(r) || parecidoArr(r)) : null; if (!du || du._id !== p.arr_id) { save.push(Object.assign({}, p, { rec_id: '' })); out.push(`${p.recibo} (${p.mes}) desenlazado del recibo; el pago registrado a mano no se tocó`); } });
+    let ps = g[rid].filter(pagoAuto).map(p => Object.assign({}, p));
     const quitar = (p, por) => { save.push(Object.assign({}, p, pagoAuto(p) ? { _del: 1 } : { rec_id: '' })); out.push(`${p.recibo} (${p.mes} ${money(p.cantidad)}) ${pagoAuto(p) ? 'quitado' : 'desenlazado'}: ${por}`); };
     if (!r || r._del || isTrue(r.nulo) || !montoArrDe(r)) { ps.forEach(p => quitar(p, 'el recibo ya no cobra alquiler')); continue; }
     const monto = montoArrDe(r), dueno = arrDeRecibo(r) || parecidoArr(r);
@@ -825,7 +828,7 @@ defView('t:arrcuenta', 'Estado de cuenta de arrendatarios', (el, p) => {
   let cat = LS.get('arrCat', '');
   /* Una sola vez: quita los pagos repetidos que creó el primer enlace masivo de recibos */
   /* Una sola vez: corrige los pagos enlazados que quedaron mal asignados o partidos */
-  if (!(CFG.arreglos || {}).arrRep3) setTimeout(async () => {
+  if (false && !(CFG.arreglos || {}).arrRep3) setTimeout(async () => { /* desactivado: la restauración se hizo con el archivo de corrección */
     if (pagosArrDelEnlace().length) await deshacerEnlaceArr();
     const xs = await repararPagosArr(); CFG.arreglos = Object.assign({}, CFG.arreglos, { arrLink1: 1, arrLink2: 1, arrRep3: 1 }); try { await saveCfg(); } catch (e) {}
     if (xs.length) verReparacionArr(xs); draw(); }, 0);
