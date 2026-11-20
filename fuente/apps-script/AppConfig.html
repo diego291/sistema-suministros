@@ -605,10 +605,22 @@ function aplicarRemoto() {
 }
 
 /* ---------- CONEXIÓN Y SINCRONIZACIÓN ---------- */
+/** Lista de los cambios guardados en este equipo que todavía no llegan a Drive (solo lectura). */
+function listaPendientes() {
+  const y = Store.year + '|', xs = [];
+  Store.queued.forEach(k => { if (!k.startsWith(y) && !k.startsWith('g|')) return; const [, mod, ...rest] = k.split('|'), id = rest.join('|'); const r = Store.data[mod] && Store.data[mod].get(id); xs.push({ mod, r }); });
+  xs.sort((a, b) => num(b.r && b.r._upd) - num(a.r && a.r._upd));
+  const desc = (mod, r) => !r ? '—' : mod === 'recibos' ? `${recNum(r)} · ${r.nombre || ''}` : [r.nombre || r.titulo || r.concepto || r.descripcion || '', r.mes, r.fecha ? fdate(r.fecha) : '', r.cantidad != null && r.cantidad !== '' ? money(r.cantidad) : (r.haber ? money(r.haber) : (r.monto ? money(r.monto) : ''))].filter(Boolean).join(' · ');
+  const tipo = r => !r ? '' : isTrue(r._del) ? '<span class="bad-t">Eliminado</span>' : r._srv ? 'Editado' : '<span class="ok-t">Nuevo</span>';
+  const hora = r => r && r._upd ? new Date(num(r._upd)).toLocaleString('es-SV', { day: '2-digit', month: '2-digit', hour: 'numeric', minute: '2-digit' }) : '';
+  return `<div class="card" style="margin-bottom:12px"><h3>☁️ Cambios sin subir a Drive (${xs.length})</h3><p class="muted" style="margin:0 0 8px;font-size:12.5px">Están guardados en este equipo y se suben solos cuando hay conexión. Si no bajan, pulse "Sincronizar ahora" y revise el mensaje de la última sincronización.</p>
+    <div class="tw" style="max-height:45vh;overflow:auto"><table class="t"><thead><tr><th>Módulo</th><th>Registro</th><th>Cambio</th><th>Hora</th></tr></thead><tbody>${xs.slice(0, 500).map(({ mod, r }) => `<tr><td>${esc((MOD[mod] && (MOD[mod].label || MOD[mod].title)) || mod)}</td><td>${esc(desc(mod, r))}</td><td>${tipo(r)}</td><td style="white-space:nowrap">${hora(r)}</td></tr>`).join('')}</tbody></table></div></div>`;
+}
 defView('cfg:sync', 'Conexión y sincronización', el => {
   const n = Sync.queued();
   const modoTxt = { gas: 'En línea (Google Apps Script)', http: BOOT.mode === 'web' ? 'Aplicación web (GitHub Pages) conectada a Google' : 'Archivo offline conectado a Google', local: 'Solo local (sin conexión configurada)' }[Sync.mode];
   el.innerHTML = cfgTabs(el, 'cfg:sync') + `<div class="kpis"><div class="kpi"><div class="l">Modo</div><div class="v" style="font-size:15px">${modoTxt}</div></div><div class="kpi ${navigator.onLine ? 'ok' : 'bad'}"><div class="l">Internet</div><div class="v">${navigator.onLine ? 'Conectado' : 'Sin conexión'}</div></div><div class="kpi ${n ? 'warn' : 'ok'}"><div class="l">Cambios sin subir</div><div class="v">${n}</div></div><div class="kpi"><div class="l">Última sincronización</div><div class="v" style="font-size:16px">${Sync.lastOk ? new Date(Sync.lastOk).toLocaleTimeString() : '—'}</div><div class="s">${esc(Sync.lastErr || '')}</div></div></div>
+  ${n ? listaPendientes() : ''}
   <div class="bar"><button class="btn pri" id="sN">🔄 Sincronizar ahora</button>${INFO.folderUrl ? `<a class="btn" href="${INFO.folderUrl}" target="_blank">📁 Abrir carpeta en Drive</a>` : ''}<button class="btn" id="sB">🗄️ Respaldo en Drive</button><button class="btn" id="sC">🧹 Compactar eliminados</button><button class="btn" id="sT">✉️ Recordatorios por correo</button><span class="sp"></span><button class="btn danger" id="sR">Reiniciar datos de este equipo</button></div>
   <div class="grid g2">
     <div class="card"><h3>💻 Trabajar sin internet (versión offline)</h3>
